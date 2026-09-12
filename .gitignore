@@ -1,0 +1,12 @@
+node_modules/
+.DS_Store
+*.log
+*.png
+*.exe
+*.zip
+*.tar.gz
+__pycache__/
+.venv/
+outputs/
+uploads/
+templates/

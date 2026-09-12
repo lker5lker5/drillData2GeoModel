@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>地质体建模系统</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+    <!-- Leaflet CSS -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <!-- Leaflet JS -->
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>地质体建模系统</h1>
+            <p>基于钻孔数据的三维地质建模与AI辅助分析平台</p>
+        </header>
+
+        <section class="upload-section">
+            <div class="upload-area" id="uploadArea">
+                <div class="upload-icon">📁</div>
+                <p>点击或拖拽上传 Excel 文件</p>
+                <p class="hint">支持 .xlsx, .xls 格式</p>
+                <input type="file" id="fileInput" accept=".xlsx,.xls" hidden>
+            </div>
+            <div class="file-info" id="fileInfo" style="display:none;">
+                <span id="fileName"></span>
+                <span class="file-size" id="fileSize"></span>
+                <button class="btn btn-small btn-remove" id="removeFile">×</button>
+            </div>
+            <div class="template-link">
+                <a href="/api/template" download>📥 下载数据模板</a>
+                <button class="btn btn-preview" id="btnPreviewData">📊 数据预览</button>
+            </div>
+        </section>
+
+        <section class="actions-section">
+            <div class="action-group">
+                <button class="btn btn-primary" id="btnDrillViews" disabled>
+                    <span class="icon">🔬</span> 生成钻孔示意图
+                </button>
+                <button class="btn btn-primary" id="btnModelViews" disabled>
+                    <span class="icon">🏔️</span> 生成建模示意图
+                </button>
+                <button class="btn btn-info" id="btnInteractive" disabled>
+                    <span class="icon">🌐</span> 交互式3D模型
+                </button>
+                <button class="btn btn-success" id="btnAIModeling" disabled>
+                    <span class="icon">🤖</span> AI示意建模
+                </button>
+            </div>
+        </section>
+
+        <section class="status-section" id="statusSection">
+            <div class="status-message" id="statusMessage">加载模板数据...</div>
+        </section>
+
+        <section class="results-section" id="resultsSection">
+            <!-- 动态内容 -->
+        </section>
+    </div>
+
+    <!-- ==================== 数据预览弹窗 ==================== -->
+    <div class="modal-overlay" id="previewModal">
+        <div class="modal-container">
+            <div class="modal-header">
+                <h2 id="modalTitle">📊 数据预览</h2>
+                <button class="modal-close" id="modalClose">&times;</button>
+            </div>
+            
+            <div class="modal-body">
+                <!-- Tab 切换 -->
+                <div class="modal-tabs" id="modalTabs">
+                    <button class="tab-btn active" data-tab="location">定位表</button>
+                    <button class="tab-btn" data-tab="survey">测斜表</button>
+                    <button class="tab-btn" data-tab="lithology">岩性表</button>
+                    <button class="tab-btn" data-tab="map">点位展示</button>
+                </div>
+
+                <!-- 控制栏（表格视图时显示） -->
+                <div class="modal-controls" id="modalControls">
+                    <div class="page-size-control">
+                        <label>每页显示：</label>
+                        <select id="pageSizeSelect">
+                            <option value="10">10行</option>
+                            <option value="20" selected>20行</option>
+                            <option value="30">30行</option>
+                            <option value="50">50行</option>
+                            <option value="100">100行</option>
+                        </select>
+                    </div>
+                    <div class="data-info" id="dataInfo">
+                        共 <span id="totalRows">0</span> 行
+                    </div>
+                </div>
+
+                <!-- 地图容器（默认隐藏） -->
+                <div class="map-container" id="mapContainer" style="display:none;height:500px;border-radius:6px;overflow:hidden;background:#f0f0f0;">
+                    <div id="previewMap" style="width:100%;height:100%;"></div>
+                    <div style="text-align:center;padding:4px;font-size:12px;color:#888;background:#f9f9f9;">钻孔点位分布（点击标记查看详情）</div>
+                </div>
+
+                <!-- 表格容器（默认显示） -->
+                <div class="table-wrapper" id="tableWrapper">
+                    <table class="modal-table" id="previewTable">
+                        <thead id="tableHead"></thead>
+                        <tbody id="tableBody"></tbody>
+                    </table>
+                </div>
+
+                <!-- 分页控件 -->
+                <div class="pagination" id="pagination">
+                    <button class="page-btn" id="prevPage" disabled>&lt;</button>
+                    <span class="page-info" id="pageInfo">第 1 / 1 页</span>
+                    <button class="page-btn" id="nextPage" disabled>&gt;</button>
+                </div>
+            </div>
+
+            <div class="modal-footer">
+                <span class="data-source" id="dataSource">数据来源：模板数据</span>
+                <button class="btn btn-close" id="modalCloseBtn">关闭</button>
+            </div>
+        </div>
+    </div>
+
+   <!-- 分页控件 全屏放大模态框-->
+    <div class="fullscreen-overlay" id="fullscreenModal">
+        <div class="fullscreen-container">
+            <button class="fullscreen-close" id="fullscreenClose">&times;</button>
+            <img id="fullscreenImage" src="" alt="放大图片">
+        </div>
+    </div>
+    <script src="/static/js/main.js"></script>
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+</body>
+</html>

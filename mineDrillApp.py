@@ -247,80 +247,118 @@ def generate_drill_views_api():
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
-
-# app.py
-
 @app.route('/api/generate_model', methods=['POST'])
 def generate_model_api():
-    """生成3D建模示意图（多视角）"""
+    """生成3D建模示意图（多视角，标注版 + 无标注版）"""
     data = request.json
     session_id = data.get('session_id')
     file_path = data.get('path')
-    
+
     if not session_id or not file_path:
         return jsonify({'error': '缺少必要参数'}), 400
     if not os.path.exists(file_path):
         return jsonify({'error': '文件不存在'}), 400
-    
+
     try:
-        # 读取数据
+        # ========== 1. 读取数据 ==========
+        log_and_print(session_id, "正在读取数据...")
         loc_df = pd.read_excel(file_path, sheet_name='定位表')
         survey_df = pd.read_excel(file_path, sheet_name='测斜表')
         litho_df = pd.read_excel(file_path, sheet_name='岩性表')
-        
-        base_name = f'model_{datetime.now().strftime("%y%m%d%H%M")}'
-        output_dir = OUTPUT_FOLDER
-        os.makedirs(output_dir, exist_ok=True)
-        
-        # 构建地质体（仅一次）
+
+        log_and_print(session_id, f"定位表: {len(loc_df)} 行, 测斜表: {len(survey_df)} 行, 岩性表: {len(litho_df)} 行")
+
+        # ========== 2. 构建地质体（仅一次，坐标归一化 + 过滤） ==========
         log_and_print(session_id, "正在构建地质体模型...")
         bodies, volume_data = build_geological_bodies_with_volume_v2(
             loc_df, litho_df, survey_df, n_layers=N_LAYERS
         )
-        
+
         if not bodies or not volume_data:
+            log_and_print(session_id, "!!! 未生成任何地质体，请检查数据")
             return jsonify({'error': '未生成任何地质体，请检查数据'}), 500
-        
-        # 从 config 中读取视角配置
-        view_configs = VIEW_CONFIGS
-        
+
+        log_and_print(session_id, f"==> 成功构建 {len(volume_data)} 个地质体")
+
+        # ========== 3. 按 order 排序视角，确保与提示词编号一致 ==========
+        view_configs = sorted(VIEW_CONFIGS, key=lambda v: v.get('order', 0))
+
+        # ========== 4. 输出目录 ==========
+        base_name = f'model_{datetime.now().strftime("%y%m%d%H%M")}'
+        output_dir = OUTPUT_FOLDER
+        os.makedirs(output_dir, exist_ok=True)
+
+        # ========== 5. 循环生成每个视角的标注图和无标注图 ==========
         results = {'labeled': [], 'unlabeled': []}
-        
-        # for view in view_configs:
-        for view in sorted(VIEW_CONFIGS, key=lambda v: v.get('order', 0)):
-            log_and_print(session_id, f"生成 {view['label']}...")
-            
-            # 标注图
-            labeled_path = draw_single_model_view(
-                volume_data, loc_df, survey_df, litho_df,
-                view, output_dir, base_name, labeled=True
-            )
-            results['labeled'].append({
-                'name': view['name'],
-                'label': view['label'],
-                'user_tip': view.get('user_tip', ''),
-                'path': labeled_path,
-                'url': f'/outputs/{os.path.basename(labeled_path)}'
-            })
-            log_and_print(session_id, f"  ==> 标注图已保存")
-            
-            # 无标注图
-            unlabeled_path = draw_single_model_view(
-                volume_data, loc_df, survey_df, litho_df,
-                view, output_dir, base_name, labeled=False
-            )
-            results['unlabeled'].append({
-                'name': view['name'],
-                'label': view['label'],
-                'user_tip': view.get('user_tip', ''),
-                'path': unlabeled_path,
-                'url': f'/outputs/{os.path.basename(unlabeled_path)}'
-            })
-            log_and_print(session_id, f"  ==> 无标注图已保存")
-        
-        # 颜色映射
-        color_map = get_color_map_from_dataframe(litho_df)
-        
+
+        for view in view_configs:
+            order = view.get('order', 0)
+            view_label = view.get('label', '')
+            log_and_print(session_id, f"生成 图{order} - {view_label}...")
+
+            # ----- 标注图 -----
+            try:
+                labeled_path = draw_single_model_view(
+                    volume_data, loc_df, survey_df, litho_df,
+                    view, output_dir, base_name, labeled=True
+                )
+                results['labeled'].append({
+                    'order': order,
+                    'name': view['name'],
+                    'label': view_label,
+                    'user_tip': view.get('user_tip', ''),
+                    'path': labeled_path,
+                    'url': f'/outputs/{os.path.basename(labeled_path)}'
+                })
+                log_and_print(session_id, f"  ==> 标注图已保存: {os.path.basename(labeled_path)}")
+            except Exception as e:
+                log_and_print(session_id, f"!!! 图{order} 标注图生成失败: {str(e)}")
+                import traceback
+                traceback.print_exc()
+
+            # ----- 无标注图 -----
+            try:
+                unlabeled_path = draw_single_model_view(
+                    volume_data, loc_df, survey_df, litho_df,
+                    view, output_dir, base_name, labeled=False
+                )
+                results['unlabeled'].append({
+                    'order': order,
+                    'name': view['name'],
+                    'label': view_label,
+                    'user_tip': view.get('user_tip', ''),
+                    'path': unlabeled_path,
+                    'url': f'/outputs/{os.path.basename(unlabeled_path)}'
+                })
+                log_and_print(session_id, f"  ==> 无标注图已保存: {os.path.basename(unlabeled_path)}")
+            except Exception as e:
+                log_and_print(session_id, f"!!! 图{order} 无标注图生成失败: {str(e)}")
+                import traceback
+                traceback.print_exc()
+
+        # ========== 6. 检查是否有任何图片生成成功 ==========
+        if not results['labeled'] and not results['unlabeled']:
+            log_and_print(session_id, "!!! 所有视角均生成失败")
+            return jsonify({'error': '所有视角生成失败，请检查数据'}), 500
+
+        # ========== 7. 获取颜色映射（用于后续 AI 建模） ==========
+        try:
+            color_map = get_color_map_from_dataframe(litho_df)
+        except Exception as e:
+            log_and_print(session_id, f"!!! 颜色映射提取失败: {str(e)}")
+            color_map = {}
+
+        # 过滤无效颜色映射
+        filtered_color_map = {}
+        for color, names in color_map.items():
+            if color and names and color.lower() not in ['nan', 'none', '']:
+                filtered_color_map[color] = names
+        color_map = filtered_color_map
+
+        log_and_print(session_id, f"==> 最终颜色映射: {len(color_map)} 项")
+        log_and_print(session_id, "==> 建模示意图生成完成")
+
+        # ========== 8. 返回结果 ==========
         return jsonify({
             'success': True,
             'labeled_views': results['labeled'],
@@ -328,12 +366,25 @@ def generate_model_api():
             'session_id': session_id,
             'color_map': color_map
         })
-        
+
     except Exception as e:
-        log_and_print(session_id, f"!!! 生成模型失败: {str(e)}")
         import traceback
-        traceback.print_exc()
-        return jsonify({'error': str(e)}), 500
+        error_detail = traceback.format_exc()
+        # 打印完整堆栈到终端
+        print("=" * 70)
+        print("!!! generate_model_api 异常:")
+        print(error_detail)
+        print("=" * 70)
+        # 记录到日志系统
+        try:
+            log_and_print(session_id, f"!!! 生成模型失败: {str(e)}")
+        except:
+            pass
+        # 返回错误信息（开发阶段返回 detail，生产环境可移除）
+        return jsonify({
+            'error': str(e),
+            'detail': error_detail
+        }), 500
 
 @app.route('/api/ai_modeling', methods=['POST'])
 def ai_modeling_api():

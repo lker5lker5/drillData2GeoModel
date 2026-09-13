@@ -6,6 +6,7 @@ import numpy as np
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
+from matplotlib.ticker import ScalarFormatter
 from mpl_toolkits.mplot3d import Axes3D
 from scipy.interpolate import Rbf
 from scipy.interpolate import interp1d
@@ -347,9 +348,9 @@ def draw_single_model_view(volume_data, loc_df, survey_df, litho_df,
     # 3. 坐标轴样式
     if labeled:
         # 标注版：完整坐标轴
-        ax.set_xlabel('Easting (m)')
-        ax.set_ylabel('Northing (m)')
-        ax.set_zlabel('Elevation (m)')
+        ax.set_xlabel('开孔坐标E (m)')
+        ax.set_ylabel('开孔坐标N (m)')
+        ax.set_zlabel('海拔高度 (m)')
         ax.grid(True, alpha=0.3)
     else:
         # ========== 无标注版：仅保留 Z 轴 + 深度标尺 ==========
@@ -377,19 +378,47 @@ def draw_single_model_view(volume_data, loc_df, survey_df, litho_df,
         ax.grid(False)
 
     # 4. 计算范围（基于 volume_data 与钻孔数据）
+        # 4. 范围（稳健计算，避免异常值污染刻度）
     all_x, all_y, all_z = [], [], []
     for data in volume_data.values():
         all_x.extend(data['X'].ravel())
         all_y.extend(data['Y'].ravel())
         for layer in data['layers']:
-            all_z.extend(layer[~np.isnan(layer)])
-    
+            valid = layer[~np.isnan(layer)]
+            all_z.extend(valid.tolist())
+
     if all_x and all_y and all_z:
+        # 过滤 NaN 后再转为数组
+        all_z_arr = np.array(all_z)
+        all_z_arr = all_z_arr[~np.isnan(all_z_arr)]
+
+        # X 和 Y 用普通极值（它们的值都在合理范围内）
         margin = 20
         ax.set_xlim(min(all_x) - margin, max(all_x) + margin)
         ax.set_ylim(min(all_y) - margin, max(all_y) + margin)
-        ax.set_zlim(min(all_z) - 10, max(all_z) + 10)
-    
+
+        # Z 用 1% 和 99% 分位数（稳健，避免极端外推值影响）
+        if len(all_z_arr) > 10:
+            z_min_v = np.percentile(all_z_arr, 1)
+            z_max_v = np.percentile(all_z_arr, 99)
+        else:
+            z_min_v = all_z_arr.min()
+            z_max_v = all_z_arr.max()
+
+        # 加 10% 的上下余量
+        z_margin = (z_max_v - z_min_v) * 0.1
+        ax.set_zlim(z_min_v - z_margin, z_max_v + z_margin)
+
+        # 关闭科学计数法
+        ax.ticklabel_format(style='plain', axis='x', useOffset=False)
+        ax.ticklabel_format(style='plain', axis='y', useOffset=False)
+        ax.ticklabel_format(style='plain', axis='z', useOffset=False)
+
+        # 旋转 X 轴刻度，避免密集时重叠
+        ax.tick_params(axis='x', labelsize=8, rotation=15)
+        ax.tick_params(axis='y', labelsize=8, rotation=-15)
+        ax.tick_params(axis='z', labelsize=9)
+
     # 5. 视角与保存
     ax.view_init(elev=view_config['elev'], azim=view_config['azim'])
 
@@ -411,7 +440,17 @@ def draw_single_model_view(volume_data, loc_df, survey_df, litho_df,
     if not labeled and all_z:
         z_max_val = max(all_z)
         z_min_val = min(all_z)
-        
+        # 显示高度范围
+        fig.text(
+            0.90, 0.10,
+            f'高程范围\n{z_min_val:.0f} ~ {z_max_val:.0f} m',
+            fontsize=10, color='#333',
+            ha='center', va='bottom',
+            bbox=dict(boxstyle='round,pad=0.4',
+                      facecolor='#f5f5f5', edgecolor='#999',
+                      linewidth=1, alpha=0.9)
+        )
+         
         # 在 figure 右侧添加一个辅助坐标轴绘制标尺
         # [左, 下, 宽, 高] 归一化坐标
         cax = fig.add_axes([0.90, 0.25, 0.025, 0.5])
@@ -781,9 +820,14 @@ def call_qwen_api_for_modeling(image_paths, color_map=COLOR_MAP, api_key=QWEN_AP
     sorted_views = sorted(VIEW_CONFIGS, key=lambda v: v.get('order', 0))
 
     image_paths = []
-    for view in sorted_views:
-        order = view.get('order', 0)
-        order_prefix = f'{order:02d}_' if order > 0 else ''
+    for order in AI_REFERENCE_IMGS:
+        # 找到对应 order 的视图配置
+        view = next((v for v in sorted_views if v.get('order') == order), None)
+        if not view:
+            print(f"!!! 未找到 order={order} 的视图配置")
+            continue
+        
+        order_prefix = f'{order:02d}_'
         pattern_suffix = f'unlabeled_{order_prefix}{view["name"]}.png'
         
         found = False
@@ -797,8 +841,10 @@ def call_qwen_api_for_modeling(image_paths, color_map=COLOR_MAP, api_key=QWEN_AP
         if not found:
             print(f"!!! 未找到 图{order} 对应的图片: {pattern_suffix}")
 
-    if len(image_paths) < 5:
-        print(f"!!! 警告: 只找到 {len(image_paths)} 张图，建议5张齐全")
+    if len(image_paths) < 3:
+        return None, f"!!! 需要3张参考图，当前只找到 {len(image_paths)} 张"
+
+    print(f"==> 已选 {len(image_paths)} 张参考图（按图{AI_REFERENCE_IMGS}顺序）")
 
     # ========== 2. 构建颜色描述 ==========
     if color_map and isinstance(color_map, dict):
@@ -815,86 +861,13 @@ def call_qwen_api_for_modeling(image_paths, color_map=COLOR_MAP, api_key=QWEN_AP
     else:
         color_relations = '各岩性用对应颜色表达'
 
-    # ========== 3. 构建提示词 ==========
-    prompt_text = f"""
-请根据以下5张同一地质体的不同视角参考图，生成一张统一、逼真的三维地质结构模型渲染图。
-
-【重要】每张图的左上角标注有"图1"至"图5"的序号，请严格按照以下对应关系理解：
-
-- 图1（main_view：立体全景视图·西北俯瞰）—— 展示地质体的整体三维形态、走向和倾伏方向，作为几何形态的主参考。
-- 图2（south_north_view：东西向剖面 A-A'）—— 从南侧向北看，展示地质体在东西方向的厚度变化和倾角，用于约束垂向结构。
-- 图3（west_east_view：南北向剖面 B-B'）—— 从西侧向东看，展示地质体在南北方向的厚度变化和倾角，与图2正交，共同约束三维形态。
-- 图4（iso_view：标准等轴测视图）—— 45°斜俯视，三个轴向比例均衡，是地质建模的标准展示角度，用于校准整体空间感。
-- 图5（north_south_view：反向东西向剖面）—— 从北侧向南看，补充图2的反向视角，确保地质体北侧结构完整无遮挡。
-
-【参考图的性质说明——请务必理解】
-上述5张参考图是**基于有限钻孔数据通过数学插值生成的初步模型**，具有以下特点：
-- 其边界受钻孔控制点的空间分布范围限制，呈现为"被凸包裁剪"的形态，边缘生硬。
-- 部分区域由于缺乏钻孔控制，会出现"凹陷""空洞"或"突然中断"的现象。
-- 这些不完整的边界**不代表真实地质体的实际边界**，仅代表"钻孔控制范围内的已知部分"。
-
-【您的任务——科学化的地质填充】
-请以这5张参考图为骨架约束，**运用地质学常识进行科学化的推断与填充**，生成一个相对完整、符合地质规律的三维地质体。具体要求如下：
-
-1. **保持钻孔控制区的形态不变**：参考图中由钻孔数据明确约束的形态、厚度、倾角必须严格保留，这是"硬约束"。
-
-2. **填充缺失区域**：对于参考图中因钻孔分布不足而出现的空洞、凹陷、断裂边缘，请根据以下地质规律进行自然填充：
-   - 地层延续性：同一岩性在空间上应保持连续，除非有明确的断层或尖灭证据。
-   - 厚度渐变：地层厚度变化应平滑过渡，不应出现突然增厚或减薄。
-   - 倾角合理：地层倾角保持在合理范围（一般 0°~60°），不出现急剧翻转。
-   - 边界外延：地质体边缘应自然延伸至模型边界，而非突然中断。
-
-3. **合理外推与尖灭**：
-   - 对于延续性强的岩性（如基岩、厚层砂岩），应向外稳定延伸直至模型边界。
-   - 对于透镜状、脉状矿体，可合理"尖灭"（厚度渐变为0），但尖灭位置应有渐变过渡，不可突兀。
-   - 覆盖层（第四系、风化层）应在顶部保持连续，覆盖整个模型区域。
-
-4. **保留不确定性提示**：
-   - 钻孔控制范围内的形态应精细、锐利。
-   - 钻孔外围的推断区域可以略微平滑、虚化，暗示"此处为推断"。
-   - 无需显式标注"推断区"，但视觉上应让人感受到"中心清晰、边缘柔和"。
-
-5. **整体协调性**：
-   - 填充后的地质体应像一个"完整的地质块体"被从地下挖出，而非"一堆钻孔数据堆叠出的碎片"。
-   - 各岩性之间过渡自然，无突兀断裂、无悬空结构。
-
-【深度与高程信息】
-参考图中：
-- Z 轴（垂直轴）表示高程（Elevation，单位：米），数值越大表示位置越浅（接近地表），数值越小表示位置越深（地下深部）。
-- 图片右侧有一个灰度标尺条（深度标尺），亮色代表浅部，暗色代表深部。
-- 请在生成的三维模型中保持这一高程逻辑：垂向延伸范围与参考图一致，不要压缩或拉伸深度比例。
-- 如果需要表达"埋深"概念，请以地表为参照，浅部地质体应靠近模型顶部，深部地质体应靠近模型底部。
-
-【关键说明】
-上述5张图是同一个地质体的不同视角，请综合理解其三维空间结构，不要将它们视为多个独立物体。
-参考图左上角的"图N"和右侧的深度标尺为辅助标识，请在生成结果中忽略这些文字和标尺，只关注地质体的形态、颜色和高程比例。
-
-【颜色与岩性对应关系】
-{color_relations}
-
-【生成要求】
-1. 地质体纹理逼真，岩石质感真实，具有自然的光影效果
-2. 各岩性严格使用上述对应颜色表达，颜色饱和度适中
-3. 保持图1的整体三维形态、图2和图5的东西向剖面结构、图3的南北向剖面结构
-4. 以图4的标准等轴测视角作为输出的空间参照
-5. 图2和图5互为反向补充，确保地质体南北两侧结构完整
-6. **地质体应呈现为完整连续的地质块体，边缘自然过渡，不应出现钻孔控制区之外"突然中断"的现象**
-7. **各岩性之间过渡自然，层位连续，无突兀断裂或空洞**
-8. 保持参考图所示的高程比例，不要过度压缩或拉伸垂直方向
-9. 背景为纯白色，无任何文字、标注或坐标系
-10. 图像风格为专业地质报告用图
-11. 输出为单张高质量的三维地质结构渲染图，分辨率不低于1024x1024
-"""
-
-    print(f"==> 提示词: {prompt_text}")
-
-    # ========== 4. 构建 content 数组 ==========
+    # ========== 3. 构建 content 数组 ==========
     content_list = []
     for path in image_paths:
         with open(path, 'rb') as f:
             b64 = base64.b64encode(f.read()).decode('utf-8')
             content_list.append({"image": f"data:image/png;base64,{b64}"})
-    content_list.append({"text": prompt_text})
+    content_list.append({"text": AI_GEOMODEL_PROMPT})
 
     # ========== 5. 构建请求体（注意：messages 在 input 下面） ==========
     payload = {
@@ -1022,16 +995,15 @@ def generate_template():
 
 # ==================== 从 drill2Model 整合的核心函数 ====================
 def build_geological_bodies_with_volume_v2(loc_df, litho_df, survey_df, n_layers=N_LAYERS):
-    """
-    构建地质体模型（含多层体数据）- 从 drill2Model 整合
-    """
-    # 获取孔口坐标（含高程）
+    """构建地质体模型（含多层体数据）"""
+    
+    # ========== 1. 孔口坐标 ==========
     hole_coords = {}
     for _, row in loc_df.iterrows():
         hid = row['钻孔编号']
-        hole_coords[hid] = (row['开孔坐标N'], row['开孔坐标E'], row['开孔高程R'])
+        hole_coords[hid] = (row['开孔坐标E'], row['开孔坐标N'], row['开孔高程R'])
     
-    # 轨迹缓存
+    # ========== 2. 轨迹缓存 ==========
     traj_cache = {}
     for hid in loc_df['钻孔编号']:
         surv = survey_df[survey_df['钻孔编号'] == hid]
@@ -1039,7 +1011,22 @@ def build_geological_bodies_with_volume_v2(loc_df, litho_df, survey_df, n_layers
             lengths, xs, ys, zs = compute_trajectory(surv)
             traj_cache[hid] = {'lengths': lengths, 'xs': xs, 'ys': ys, 'zs': zs}
     
-    # 收集岩性顶底点
+    # ========== 3. 坐标归一化参数 ==========
+    base_e = loc_df['开孔坐标E'].min()
+    base_n = loc_df['开孔坐标N'].min()
+    span_e = loc_df['开孔坐标E'].max() - base_e
+    span_n = loc_df['开孔坐标N'].max() - base_n
+    span_max = max(span_e, span_n, 1.0)
+    scale = 1000.0
+    scale_factor = scale / span_max
+    
+    def normalize(x, y):
+        return (x - base_e) * scale_factor, (y - base_n) * scale_factor
+    
+    def denormalize(x, y):
+        return x / scale_factor + base_e, y / scale_factor + base_n
+    
+    # ========== 4. 收集岩性顶底点（归一化坐标） ==========
     litho_groups = {}
     for _, seg in litho_df.iterrows():
         hid = seg['钻孔编号']
@@ -1049,104 +1036,143 @@ def build_geological_bodies_with_volume_v2(loc_df, litho_df, survey_df, n_layers
         color = parse_color(seg['建模颜色'], lith)
         if hid not in hole_coords or hid not in traj_cache:
             continue
-        n0, e0, z0 = hole_coords[hid]
+        e0, n0, z0 = hole_coords[hid]   # 注意：E 在前，N 在后
         traj = traj_cache[hid]
-        x_top, y_top, z_top = get_interpolated_coords(traj['lengths'], traj['xs'], traj['ys'], traj['zs'], [d_top])
-        x_bot, y_bot, z_bot = get_interpolated_coords(traj['lengths'], traj['xs'], traj['ys'], traj['zs'], [d_bot])
-        x_top, y_top = x_top[0] + n0, y_top[0] + e0
-        x_bot, y_bot = x_bot[0] + n0, y_bot[0] + e0
+        x_top, y_top, z_top = get_interpolated_coords(
+            traj['lengths'], traj['xs'], traj['ys'], traj['zs'], [d_top])
+        x_bot, y_bot, z_bot = get_interpolated_coords(
+            traj['lengths'], traj['xs'], traj['ys'], traj['zs'], [d_bot])
+        
+        # 加上孔口坐标（X=东, Y=北）
+        x_top, y_top = x_top[0] + e0, y_top[0] + n0
+        x_bot, y_bot = x_bot[0] + e0, y_bot[0] + n0
         z_top, z_bot = z_top[0] + z0, z_bot[0] + z0
+        
         if lith not in litho_groups:
             litho_groups[lith] = {'color': color, 'top': [], 'bottom': []}
-        litho_groups[lith]['top'].append((x_top, y_top, z_top))
-        litho_groups[lith]['bottom'].append((x_bot, y_bot, z_bot))
+        
+        # 归一化 XY
+        x_top_n, y_top_n = normalize(x_top, y_top)
+        x_bot_n, y_bot_n = normalize(x_bot, y_bot)
+        
+        litho_groups[lith]['top'].append((x_top_n, y_top_n, z_top))
+        litho_groups[lith]['bottom'].append((x_bot_n, y_bot_n, z_bot))
     
-    # 打印每个岩性的点数
-    for lith, data in litho_groups.items():
-        print(f"岩性 {lith}: {len(data['top'])} 个顶底控制点")
+    # ========== 5. 归一化插值网格（保持纵横比） ==========
+    grid_res = GRID_RESOLUTION
+    x_min_n, x_max_n = 0.0, scale
+    y_min_n, y_max_n = 0.0, scale * (span_n / span_max)
+    xi_n = np.linspace(x_min_n, x_max_n, grid_res)
+    yi_n = np.linspace(y_min_n, y_max_n, grid_res)
+    xi_n, yi_n = np.meshgrid(xi_n, yi_n)
     
-    # 确定插值网格（扩大范围）
-    all_n = loc_df['开孔坐标N'].values
-    all_e = loc_df['开孔坐标E'].values
-    x_min, x_max = all_n.min() - 50, all_n.max() + 50
-    y_min, y_max = all_e.min() - 50, all_e.max() + 50
-    grid_res = 30
-    xi = np.linspace(x_min, x_max, grid_res)
-    yi = np.linspace(y_min, y_max, grid_res)
-    xi, yi = np.meshgrid(xi, yi)
+    # 把归一化网格映射回原始坐标（用于最终存储）
+    xi_orig, yi_orig = denormalize(xi_n, yi_n)
     
-    bodies = {}
-    volume_data = {}
-
-    # ========== 自动计算 n_layers ==========
+    # ========== 6. 自动计算 n_layers ==========
     if n_layers is None:
-        # 计算所有岩性的平均厚度（米）
         all_thicknesses = []
         for lith, data in litho_groups.items():
-            if len(data['top']) > 0 and len(data['bottom']) > 0:
-                # 计算每个钻孔中该岩性的厚度（顶底高程差）
-                for top, bottom in zip(data['top'], data['bottom']):
-                    # top 和 bottom 是 (x, y, z) 元组
-                    thickness = abs(top[2] - bottom[2])
-                    if thickness > 0 and thickness < 1000:  # 过滤异常值
-                        all_thicknesses.append(thickness)
-        
+            for top, bottom in zip(data['top'], data['bottom']):
+                thickness = abs(top[2] - bottom[2])
+                if 0 < thickness < 1000:
+                    all_thicknesses.append(thickness)
         if all_thicknesses:
-            # 剔除极端值（5%~95%）
             sorted_th = np.sort(all_thicknesses)
             p5, p95 = np.percentile(sorted_th, [5, 95])
             filtered = [t for t in sorted_th if p5 <= t <= p95]
             avg_thickness = np.mean(filtered) if filtered else np.mean(all_thicknesses)
-            # 根据平均厚度计算层数（6~25层）
             computed_layers = int(6 + avg_thickness / 30)
             n_layers = max(5, min(25, computed_layers))
             print(f"==> 根据平均厚度 ({avg_thickness:.1f}m) 自动设置层数: {n_layers}")
         else:
-            # 保底值
             n_layers = 12
             print(f"==> 无法计算平均厚度，使用默认层数: {n_layers}")
-
-    # 使用计算出的 n_layers
+    
+    # ========== 7. 逐岩性插值 ==========
+    bodies = {}
+    volume_data = {}
+    
     for lith, data in litho_groups.items():
-        if len(data['top']) < 2:
-            print(f"跳过 {lith}，仅 {len(data['top'])} 个点")
+        n_top = len(data['top'])
+        n_bot = len(data['bottom'])
+        print(f"岩性 {lith}: {n_top} 个顶板点, {n_bot} 个底板点")
+        
+        # 提高过滤阈值到 5，避免单点/双点岩性退化为平面
+        if n_top < 5 or n_bot < 5:
+            print(f"!!! 跳过 {lith}：控制点过少，无法可靠插值")
             continue
+        
         top_pts = np.array(data['top'])
         bot_pts = np.array(data['bottom'])
-        # 使用全局凸包作为掩膜
+        
+        # 凸包裁剪（归一化坐标）
         all_pts = np.vstack([top_pts[:, :2], bot_pts[:, :2]])
         try:
             hull = ConvexHull(all_pts)
             hull_path = Path(all_pts[hull.vertices])
-            grid_points = np.column_stack((xi.ravel(), yi.ravel()))
-            inside = hull_path.contains_points(grid_points).reshape(xi.shape)
-        except:
-            inside = np.ones(xi.shape, dtype=bool)
+            grid_points = np.column_stack((xi_n.ravel(), yi_n.ravel()))
+            inside = hull_path.contains_points(grid_points).reshape(xi_n.shape)
+        except Exception:
+            inside = np.ones(xi_n.shape, dtype=bool)
+        
+        # RBF 在归一化坐标上训练
         try:
-            rbf_top = Rbf(top_pts[:,0], top_pts[:,1], top_pts[:,2], function=RBF_FUNCTION, smooth=RBF_SMOOTH)
-            rbf_bot = Rbf(bot_pts[:,0], bot_pts[:,1], bot_pts[:,2], function=RBF_FUNCTION, smooth=RBF_SMOOTH)
+            rbf_top = Rbf(top_pts[:, 0], top_pts[:, 1], top_pts[:, 2],
+                          function=RBF_FUNCTION, smooth=RBF_SMOOTH)
+            rbf_bot = Rbf(bot_pts[:, 0], bot_pts[:, 1], bot_pts[:, 2],
+                          function=RBF_FUNCTION, smooth=RBF_SMOOTH)
         except Exception as e:
-            print(f"岩性 {lith} 插值失败: {e}")
+            print(f"!!! 岩性 {lith} 插值失败: {e}")
             continue
-        Z_top = rbf_top(xi, yi)
-        Z_bot = rbf_bot(xi, yi)
+        
+        # ========== 关键修复：在归一化网格上预测 ==========
+        Z_top = rbf_top(xi_n, yi_n)   # ← 用 xi_n, yi_n，不是 xi, yi
+        Z_bot = rbf_bot(xi_n, yi_n)
+        
+        # 裁剪异常外推值
+        z_combined = np.concatenate([top_pts[:, 2], bot_pts[:, 2]])
+        z_lo_data = np.percentile(z_combined, 0.5)
+        z_hi_data = np.percentile(z_combined, 99.5)
+        z_span = z_hi_data - z_lo_data if z_hi_data > z_lo_data else 1.0
+        z_lo = z_lo_data - z_span * 0.5
+        z_hi = z_hi_data + z_span * 0.5
+        Z_top = np.clip(Z_top, z_lo, z_hi)
+        Z_bot = np.clip(Z_bot, z_lo, z_hi)
+        
+        # 应用凸包掩膜
         Z_top[~inside] = np.nan
         Z_bot[~inside] = np.nan
+        
+        # 保证顶面在底面之上
         mask = Z_top > Z_bot
         Z_top_c = np.where(mask, Z_top, Z_bot)
         Z_bot_c = np.where(mask, Z_bot, Z_top)
-        bodies[lith] = {'X': xi, 'Y': yi, 'Z_top': Z_top_c, 'Z_bot': Z_bot_c, 'color': data['color']}
+        
+        # ========== 存储时用原始坐标（保持一致） ==========
+        bodies[lith] = {
+            'X': xi_orig, 'Y': yi_orig,
+            'Z_top': Z_top_c, 'Z_bot': Z_bot_c,
+            'color': data['color']
+        }
+        
         # 体层
         layers = []
         for k in range(n_layers + 2):
             t = k / (n_layers + 1)
             Z_layer = Z_top_c * (1 - t) + Z_bot_c * t
             layers.append(Z_layer)
-        volume_data[lith] = {'X': xi, 'Y': yi, 'layers': layers, 'color': data['color']}
-        print(f"岩性 {lith} 插值成功，有效网格点: {np.sum(~np.isnan(Z_top_c))}")
+        
+        volume_data[lith] = {
+            'X': xi_orig, 'Y': yi_orig,   # ← 关键：用 xi_orig, yi_orig
+            'layers': layers,
+            'color': data['color']
+        }
+        
+        valid_count = int(np.sum(~np.isnan(Z_top_c)))
+        print(f"==> 岩性 {lith} 插值成功，有效网格点: {valid_count}")
     
     return bodies, volume_data
-
 
 def generate_depth_map_from_volume_v2(volume_data, output_path, light_dir=(-1, -1, 0.5)):
     """

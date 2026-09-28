@@ -18,8 +18,6 @@ const fileSize = document.getElementById('fileSize');
 const removeFileBtn = document.getElementById('removeFile');
 const statusMessage = document.getElementById('statusMessage');
 const resultsSection = document.getElementById('resultsSection');
-const dataPreviewSection = document.getElementById('dataPreviewSection');
-
 const btnDrillViews = document.getElementById('btnDrillViews');
 const btnModelViews = document.getElementById('btnModelViews');
 const btnAIModeling = document.getElementById('btnAIModeling');
@@ -45,166 +43,6 @@ function formatFileSize(bytes) {
     if (bytes < 1024) return bytes + ' B';
     if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
     return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
-}
-
-function showResults(html) {
-    resultsSection.innerHTML = html;
-    resultsSection.classList.add('visible');
-}
-
-function clearResults() {
-    resultsSection.innerHTML = '';
-    resultsSection.classList.remove('visible');
-}
-
-
-function showDataPreview(data, isTemplate) {
-    const previewDiv = document.getElementById('dataPreview');
-    if (!previewDiv) return;
-    
-    const title = isTemplate ? '模板数据预览' : '上传数据预览';
-    const stats = data.stats;
-    
-    let html = `
-        <div class="data-preview-header">
-            <h3>${title}</h3>
-            <div class="data-stats">
-                <span class="stat-item">钻孔数: ${stats.total_holes}</span>
-                <span class="stat-item">测斜点数: ${stats.total_survey_points}</span>
-                <span class="stat-item">岩性段数: ${stats.total_lithology_segments}</span>
-            </div>
-        </div>
-    `;
-    
-    // 岩性统计
-    if (stats.lithology_stats) {
-        html += `<div class="lithology-stats">`;
-        html += `<h4>岩性分布</h4>`;
-        html += `<div class="lithology-tags">`;
-        for (const [lith, count] of Object.entries(stats.lithology_stats)) {
-            const color = stats.color_map ? Object.keys(stats.color_map).find(k => stats.color_map[k].includes(lith)) : null;
-            const colorStyle = color ? `style="background-color:${color};color:${isLightColor(color) ? '#000' : '#fff'}"` : '';
-            html += `<span class="lithology-tag" ${colorStyle}>${lith} (${count})</span>`;
-        }
-        html += `</div></div>`;
-    }
-    
-    // 颜色映射
-    if (stats.color_map) {
-        html += `<div class="color-map">`;
-        html += `<h4>颜色映射</h4>`;
-        html += `<div class="color-map-items">`;
-        for (const [color, name] of Object.entries(stats.color_map)) {
-            html += `<div class="color-map-item">
-                <span class="color-swatch" style="background-color:${color};"></span>
-                <span>${color} → ${name}</span>
-            </div>`;
-        }
-        html += `</div></div>`;
-    }
-    
-    // 数据表格 - 三个表格
-    html += `<div class="data-tables">`;
-    
-    // 1. 定位表
-    html += `<div class="data-table-wrap">`;
-    html += `<h4>定位表 (前${Math.min(data.location.length, 5)}行)</h4>`;
-    html += `<table class="data-table">`;
-    if (data.location && data.location.length > 0) {
-        const headers = Object.keys(data.location[0]);
-        html += `<thead><tr>`;
-        for (const h of headers) {
-            html += `<th>${h}</th>`;
-        }
-        html += `</tr></thead><tbody>`;
-        for (let i = 0; i < Math.min(data.location.length, 5); i++) {
-            html += `<tr>`;
-            for (const h of headers) {
-                html += `<td>${data.location[i][h] ?? ''}</td>`;
-            }
-            html += `</tr>`;
-        }
-        html += `</tbody>`;
-    } else {
-        html += `<tbody><tr><td colspan="5" style="text-align:center;color:#999;">暂无数据</td></tr></tbody>`;
-    }
-    html += `</table></div>`;
-    
-    // 2. 测斜表
-    html += `<div class="data-table-wrap">`;
-    html += `<h4>测斜表 (前${Math.min(data.survey.length, 5)}行)</h4>`;
-    html += `<table class="data-table">`;
-    if (data.survey && data.survey.length > 0) {
-        const headers = Object.keys(data.survey[0]);
-        html += `<thead><tr>`;
-        for (const h of headers) {
-            html += `<th>${h}</th>`;
-        }
-        html += `</tr></thead><tbody>`;
-        for (let i = 0; i < Math.min(data.survey.length, 5); i++) {
-            html += `<tr>`;
-            for (const h of headers) {
-                html += `<td>${data.survey[i][h] ?? ''}</td>`;
-            }
-            html += `</tr>`;
-        }
-        html += `</tbody>`;
-    } else {
-        html += `<tbody><tr><td colspan="4" style="text-align:center;color:#999;">暂无数据</td></tr></tbody>`;
-    }
-    html += `</table></div>`;
-    
-    // 3. 岩性表
-    html += `<div class="data-table-wrap">`;
-    html += `<h4>岩性表 (前${Math.min(data.lithology.length, 5)}行)</h4>`;
-    html += `<table class="data-table">`;
-    if (data.lithology && data.lithology.length > 0) {
-        const headers = Object.keys(data.lithology[0]);
-        html += `<thead><tr>`;
-        for (const h of headers) {
-            html += `<th>${h}</th>`;
-        }
-        html += `</tr></thead><tbody>`;
-        for (let i = 0; i < Math.min(data.lithology.length, 5); i++) {
-            html += `<tr>`;
-            for (const h of headers) {
-                const val = data.lithology[i][h] ?? '';
-                if (h === '建模颜色' && val) {
-                    html += `<td><span class="color-swatch-inline" style="background-color:${val};"></span> ${val}</td>`;
-                } else {
-                    html += `<td>${val}</td>`;
-                }
-            }
-            html += `</tr>`;
-        }
-        html += `</tbody>`;
-    } else {
-        html += `<tbody><tr><td colspan="5" style="text-align:center;color:#999;">暂无数据</td></tr></tbody>`;
-    }
-    html += `</table></div>`;
-    
-    html += `</div>`; // 结束 data-tables
-    
-    previewDiv.innerHTML = html;
-    previewDiv.style.display = 'block';
-}
-
-
-// ==================== 加载模板数据 ====================
-async function loadTemplateData() {
-    try {
-        const response = await fetch('/api/template_info');
-        const result = await response.json();
-        if (result.success) {
-            updatePreviewData(result.data, true);
-            currentData = result.data;
-            setStatus('==> 模板数据加载成功，可点击「数据预览」查看', 'success');
-        } else {
-            setStatus('!!! 加载模板数据失败: ' + (result.error || '未知错误'), 'error');
-        }
-    } catch (error) {
-        setStatus('!!! 加载模板数据失败: ' + error.message, 'error');
-    }
 }
 
 // ==================== 文件上传 ====================
@@ -240,234 +78,77 @@ removeFileBtn.addEventListener('click', () => {
     sessionId = null;
     filePath = null;
     setButtonsEnabled(false);
-    clearResults();
-    // 恢复显示模板数据
     if (currentData) {
-        showDataPreview(currentData, true);
+        updatePreviewData(currentData, true);
         isTemplateData = true;
     }
     setStatus('等待上传文件...', 'info');
 });
 
-async function handleFile(file) {
-    const validTypes = ['application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', 
-                        'application/vnd.ms-excel'];
-    if (!validTypes.includes(file.type) && !file.name.match(/\.(xlsx|xls)$/)) {
-        setStatus('!!! 请上传 .xlsx 或 .xls 格式的文件', 'error');
-        return;
+// ==================== 按钮"计算中"状态管理 ====================
+/**
+ * 启动按钮的"计算中"状态
+ * @param {HTMLElement} btn - 目标按钮
+ * @param {string} label - 提示文字，如"钻孔绘制中"
+ * @returns {Object} - 返回一个控制器，用于更新计时器文字
+ */
+function startButtonTimer(btn, label) {
+    if (!btn) return null;
+
+    // 1. 按钮变灰
+    btn.classList.add('loading');
+    btn.disabled = true;
+
+    // 2. 查找或创建提示行（在按钮后面）
+    let timerEl = btn.nextElementSibling;
+    if (!timerEl || !timerEl.classList.contains('btn-timer')) {
+        timerEl = document.createElement('div');
+        timerEl.className = 'btn-timer';
+        btn.parentNode.insertBefore(timerEl, btn.nextSibling);
     }
+    timerEl.classList.remove('hidden');
 
-    setStatus('正在上传文件...', 'loading');
+    // 3. 计时器逻辑
+    const startTime = Date.now();
+    let timerId = null;
 
-    const formData = new FormData();
-    formData.append('file', file);
-
-    try {
-        const response = await fetch('/api/upload', { method: 'POST', body: formData });
-        const data = await response.json();
-
-        if (data.error) {
-            setStatus('!!! ' + data.error, 'error');
-            return;
+    function formatTime(seconds) {
+        if (seconds < 60) {
+            return `${seconds}s`;
         }
-
-        sessionId = data.session_id;
-        filePath = data.path;
-
-        fileInfo.style.display = 'flex';
-        uploadArea.style.display = 'none';
-        fileName.textContent = data.filename;
-        fileSize.textContent = formatFileSize(file.size);
-
-        // 关键：加载文件数据并更新预览
-        await loadFileData(filePath);
-
-        setButtonsEnabled(true);
-        setStatus('==> 文件上传成功: ' + data.filename, 'success');
-        clearResults();
-    } catch (error) {
-        setStatus('!!! 上传失败: ' + error.message, 'error');
+        const m = Math.floor(seconds / 60);
+        const s = seconds % 60;
+        return `${m}分${s}秒`;
     }
+
+    function updateText() {
+        const elapsed = Math.floor((Date.now() - startTime) / 1000);
+        timerEl.innerHTML = `${label}（已用时 ${formatTime(elapsed)}）`;
+    }
+
+    updateText();  // 立即显示 0s
+    timerId = setInterval(updateText, 1000);
+
+    // 4. 返回控制器
+    return {
+        stop: function () {
+            if (timerId) {
+                clearInterval(timerId);
+                timerId = null;
+            }
+            btn.classList.remove('loading');
+            btn.disabled = false;
+            timerEl.classList.add('hidden');
+        }
+    };
 }
 
-async function loadFileData(path) {
-    try {
-        const response = await fetch('/api/file_info', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ path: path })
-        });
-
-        // 首先检查响应是否成功
-        if (!response.ok) {
-            // 获取错误文本（可能是 HTML）
-            const text = await response.text();
-            console.error('服务器返回错误:', text);
-            setStatus('!!! 服务器错误: ' + response.status, 'error');
-            return;
-        }
-
-        // 尝试解析 JSON
-        let result;
-        try {
-            result = await response.json();
-        } catch (jsonError) {
-            // 如果 JSON 解析失败，获取原始文本并显示
-            const text = await response.text();
-            console.error('JSON 解析失败，原始响应:', text);
-            setStatus('!!! 响应格式错误，请检查后端日志', 'error');
-            return;
-        }
-
-        console.log('loadFileData 返回:', result);
-
-        if (result.success) {
-            updatePreviewData(result.data, false);
-            if (currentTab === 'map' && previewMap) {
-                updateMapMarkers();
-            }
-            // 更新标题（如果弹窗已打开）
-            if (previewModal.classList.contains('active')) {
-                modalTitle.textContent = '📊 预览数据（上传数据）';
-            }
-        } else {
-            setStatus('!!! 读取文件数据失败: ' + (result.error || '未知错误'), 'error');
-            console.error('后端错误:', result.error);
-        }
-    } catch (error) {
-        console.error('loadFileData 捕获错误:', error);
-        setStatus('!!! 加载数据失败: ' + error.message, 'error');
-    }
-}
-
-// ==================== 浙江天地图地图 ====================
-// 主地图
-let mainMap = null;
-let mainMarkerGroup = [];   // 存储标记对象
-let mainMapInitialized = false;
-
-// 预览地图
+// ==================== 预览地图（用于数据弹窗中的地图Tab）====================
 let previewMap = null;
 let previewMarkerGroup = [];
 let previewMapInitialized = false;
 
 const zj_key = window.ZJ_TIANDITU_KEY || '';
-
-function initMainMap() {
-    if (!zj_key) {
-        alert('天地图密钥未配置，无法加载地图');
-        return;
-    }
-    const container = document.getElementById('mainMap');
-
-    if (!container) return;
-    if (mainMap) {
-        mainMap.resize();
-        return;
-    }
-    // 创建地图
-    mainMap = new T.Map('mainMap');
-    // 浙江省中心点
-    var center = new T.LngLat(120.2, 30.3);
-    mainMap.centerAndZoom(center, 8);
-    // 添加控件
-    mainMap.addControl(new T.Control.Zoom());
-    mainMap.addControl(new T.Control.Scale());
-    mainMapInitialized = true;
-    document.getElementById('mainMapContainer').style.display = 'block';
-    console.log('✅ 浙江天地图初始化完成');
-    
-}
-
-function showPointsOnMainMap() {
-    try {
-        if (!zj_key) {
-            alert('天地图密钥未配置');
-            return;
-        }
-        if (!mainMapInitialized) {
-            initMainMap();
-            if (!mainMap) return;
-        }
-        if (!mainMap) return;
-
-        // 清除旧标记
-        mainMarkerGroup.forEach(marker => mainMap.removeOverLay(marker));
-        mainMarkerGroup = [];
-
-        const points = previewData.points || [];
-        if (!points.length) {
-            alert('暂无钻孔数据');
-            return;
-        }
-
-        const bounds = new T.LngLatBounds();
-
-        points.forEach(p => {
-            console.log(p)
-            const lngLat = new T.LngLat(p.lat, p.lon);
-            const marker = new T.Marker(lngLat);
-
-            // 1. 创建信息窗口的内容 (HTML字符串)
-            const contentHtml = `
-                <div style="padding:4px 8px;font-size:13px;line-height:1.6;">
-                    <div style="font-weight:bold;font-size:15px;color:#1a73e8;border-bottom:1px solid #eee;margin-bottom:4px;">
-                        🔹 ${p.钻孔编号}
-                    </div>
-                    <div>开孔坐标E: ${p.lat || '--'}</div>
-                    <div>开孔坐标N: ${p.lon || '--'}</div>
-                    <div>开孔高程R: ${p.开孔高程R || '--'} m</div>
-                    <div>钻孔长度: ${p.钻孔长度 || '--'} m</div>
-                </div>
-            `;
-            // 2. 将HTML字符串转换为DOM元素
-            const contentDiv = document.createElement('div');
-            contentDiv.innerHTML = contentHtml;
-
-            // 3. 创建信息窗口，传入DOM元素
-            const infoWin = new T.InfoWindow(contentDiv, { offset: new T.Point(0, -30) });
-
-            // 4. 绑定点击事件
-            marker.addEventListener("click", function(e) {
-                const point = e.lnglat;
-                const content = `
-                    <div style="padding:6px 12px;font-size:13px;line-height:1.7;">
-                        <div style="font-weight:bold;font-size:15px;color:#1a73e8;border-bottom:1px solid #eee;margin-bottom:6px;">
-                            🔹 ${p.钻孔编号}
-                        </div>
-                        <div>经度 (lon): ${p.lon ? p.lon.toFixed(6) : '--'}</div>
-                        <div>纬度 (lat): ${p.lat ? p.lat.toFixed(6) : '--'}</div>
-                        <div>开孔坐标E: ${p.开孔坐标E || '--'} m</div>
-                        <div>开孔坐标N: ${p.开孔坐标N || '--'} m</div>
-                        <div>开孔高程R: ${p.开孔高程R || '--'} m</div>
-                        <div>钻孔长度: ${p.钻孔长度 || '--'} m</div>
-                    </div>
-                `;
-                const infoWin = new T.InfoWindow();
-                infoWin.setContent(content);
-                mainMap.closeInfoWindow();
-                mainMap.openInfoWindow(infoWin, point);
-            });
-
-            mainMap.addOverLay(marker);
-            mainMarkerGroup.push(marker);
-            bounds.extend(lngLat);
-        });
-
-        if (mainMarkerGroup.length) {
-            if (mainMap.fitBounds) {
-                mainMap.fitBounds(bounds, { padding: 40 });
-            } else {
-                const center = bounds.getCenter();
-                mainMap.centerAndZoom(center, 10);
-            }
-        }
-        setStatus(`==> 已叠加 ${mainMarkerGroup.length} 个钻孔点位`, 'success');
-    } catch (e) {
-        console.error('地图操作异常:', e);
-        setStatus('!!! 地图操作异常，请刷新页面重试', 'error');
-    }
-}
 
 // ==================== 生成钻孔示意图 ====================
 btnDrillViews.addEventListener('click', async () => {
@@ -476,9 +157,10 @@ btnDrillViews.addEventListener('click', async () => {
         return;
     }
 
-    startLogPolling(sessionId); // 启动日志轮询
+    startLogPolling(sessionId);
     setStatus('正在生成钻孔示意图...', 'loading');
-    btnDrillViews.disabled = true;
+
+    const timer = startButtonTimer(btnDrillViews, '钻孔绘制中');
 
     try {
         const response = await fetch('/api/generate_drill_views', {
@@ -487,12 +169,11 @@ btnDrillViews.addEventListener('click', async () => {
             body: JSON.stringify({ session_id: sessionId, path: filePath })
         });
         const data = await response.json();
-
-        stopLogPolling(); // 停止日志轮询
+        stopLogPolling();
 
         if (data.error) {
             setStatus('!!! ' + data.error, 'error');
-            btnDrillViews.disabled = false;
+            if (timer) timer.stop();
             return;
         }
 
@@ -500,14 +181,14 @@ btnDrillViews.addEventListener('click', async () => {
         currentSlideIndex = 0;
         renderCarousel(currentViews, '钻孔示意图');
         setStatus('==> 生成完成，共 ' + currentViews.length + ' 张图', 'success');
-        btnDrillViews.disabled = false;
+        if (timer) timer.stop();
 
     } catch (error) {
+        stopLogPolling();
         setStatus('!!! 生成失败: ' + error.message, 'error');
-        btnDrillViews.disabled = false;
+        if (timer) timer.stop();
     }
 });
-
 
 // ==================== 生成建模示意图 ====================
 btnModelViews.addEventListener('click', async () => {
@@ -516,28 +197,30 @@ btnModelViews.addEventListener('click', async () => {
         return;
     }
 
-    // ========== 1. 立即隐藏钻孔模型容器，清空结果区 ==========
+    // 隐藏钻孔模型容器
     const drillContainer = document.getElementById('drillModelContainer');
     if (drillContainer) {
-        drillContainer.style.display = 'none';  // 隐藏，不占位
+        drillContainer.style.display = 'none';
     }
     const resultsSection = document.getElementById('resultsSection');
     if (resultsSection) {
-        resultsSection.innerHTML = '';           // 清空旧轮播
+        resultsSection.innerHTML = '';
         resultsSection.classList.remove('visible');
     }
-    // 可选：显示一个“加载中”提示
+    // 显示加载提示
     const loadingDiv = document.createElement('div');
     loadingDiv.id = 'modelLoading';
     loadingDiv.style.cssText = 'text-align:center;padding:40px;font-size:16px;color:#666;';
     loadingDiv.innerHTML = '⏳ 正在生成建模示意图，请稍候...';
-    resultsSection.appendChild(loadingDiv);
-    resultsSection.classList.add('visible');
+    if (resultsSection) {
+        resultsSection.appendChild(loadingDiv);
+        resultsSection.classList.add('visible');
+    }
 
-    // 启动日志轮询
     startLogPolling(sessionId);
     setStatus('正在生成建模示意图...', 'loading');
-    btnModelViews.disabled = true;
+
+    const timer = startButtonTimer(btnModelViews, '建模绘制中');
 
     try {
         const response = await fetch('/api/generate_model', {
@@ -550,23 +233,23 @@ btnModelViews.addEventListener('click', async () => {
 
         if (data.error) {
             setStatus('!!! ' + data.error, 'error');
-            btnModelViews.disabled = false;
-            // 出错时恢复钻孔模型显示
+            if (timer) timer.stop();
             if (drillContainer) drillContainer.style.display = 'flex';
             return;
         }
 
         modelData = data;
 
-        // ========== 2. 移除加载提示，渲染结果 ==========
+        // 移除加载提示
         const loadingEl = document.getElementById('modelLoading');
         if (loadingEl) loadingEl.remove();
 
-        // 重新填充结果
-        resultsSection.innerHTML = '';
-        resultsSection.classList.add('visible');
+        // 渲染结果（保持你原有的逻辑）
+        if (resultsSection) {
+            resultsSection.innerHTML = '';
+            resultsSection.classList.add('visible');
+        }
 
-        // 标注图轮播
         if (data.labeled_views && data.labeled_views.length > 0) {
             const labeledViews = data.labeled_views.map(v => ({
                 url: v.url,
@@ -579,7 +262,6 @@ btnModelViews.addEventListener('click', async () => {
             renderCarouselToElement(div, labeledViews, '三维建模示意图（标注版）');
         }
 
-        // 无标注图轮播
         if (data.unlabeled_views && data.unlabeled_views.length > 0) {
             const unlabeledViews = data.unlabeled_views.map(v => ({
                 url: v.url,
@@ -592,40 +274,33 @@ btnModelViews.addEventListener('click', async () => {
             renderCarouselToElement(div, unlabeledViews, '三维建模示意图（无标注版）');
         }
 
-        // 启用AI建模
         if (data.color_map && Object.keys(data.color_map).length > 0) {
             btnAIModeling.disabled = false;
         } else {
             btnAIModeling.disabled = true;
         }
 
-        // ========== 3. 恢复钻孔模型显示（但放在结果下方，如果需要） ==========
-        // 如果希望保留钻孔模型在底部，可取消注释；当前需求是隐藏，则不恢复
-        // if (drillContainer) drillContainer.style.display = 'flex';
-
         setStatus('==> 多视角建模示意图生成完成', 'success');
-        btnModelViews.disabled = false;
+        if (timer) timer.stop();
 
     } catch (error) {
         stopLogPolling();
         setStatus('!!! 生成失败: ' + error.message, 'error');
-        btnModelViews.disabled = false;
-        // 出错时恢复钻孔模型
-        if (drillContainer) drillContainer.style.display = 'flex';
+        if (timer) timer.stop();
     }
 });
 
 // ==================== AI建模 ====================
 btnAIModeling.addEventListener('click', async () => {
-    // 检查是否有模型数据
     if (!modelData || !modelData.color_map || Object.keys(modelData.color_map).length === 0) {
         setStatus('!!! 请先生成建模示意图', 'error');
         return;
     }
 
-    startLogPolling(sessionId); // 启动日志轮询
-    setStatus('正在进行AI建模，请稍候...（生成4张图）', 'loading');
-    btnAIModeling.disabled = true;
+    startLogPolling(sessionId);
+    setStatus('正在进行AI建模，请稍候...', 'loading');
+
+    const timer = startButtonTimer(btnAIModeling, 'AI 建模中');
 
     try {
         const response = await fetch('/api/ai_modeling', {
@@ -637,12 +312,11 @@ btnAIModeling.addEventListener('click', async () => {
             })
         });
         const data = await response.json();
+        stopLogPolling();
 
-        stopLogPolling(); // 停止日志轮询
-        
         if (data.error) {
             setStatus('!!! ' + data.error, 'error');
-            btnAIModeling.disabled = false;
+            if (timer) timer.stop();
             return;
         }
 
@@ -650,29 +324,17 @@ btnAIModeling.addEventListener('click', async () => {
             url: url,
             label: `AI建模图 ${idx+1}`
         }));
-        
         renderCarousel(aiViews, 'AI 建模结果');
 
         setStatus('==> AI建模完成，生成 ' + data.count + ' 张图', 'success');
-        btnAIModeling.disabled = false;
+        if (timer) timer.stop();
 
     } catch (error) {
+        stopLogPolling();
         setStatus('!!! AI建模失败: ' + error.message, 'error');
-        btnAIModeling.disabled = false;
+        if (timer) timer.stop();
     }
 });
-
-// ==================== 批量下载AI图片 ====================
-function downloadAllAIImages() {
-    if (!window._aiImageUrls || window._aiImageUrls.length === 0) {
-        alert('没有AI图片可下载');
-        return;
-    }
-    downloadAllAsZip(window._aiImageUrls, 'ai_model_images.zip');
-}
-
-// 全局暴露批量下载函数
-window.downloadAllAIImages = downloadAllAIImages;
 
 // ==================== 交互式3D模型 ====================
 btnInteractive.addEventListener('click', async () => {
@@ -681,13 +343,12 @@ btnInteractive.addEventListener('click', async () => {
         return;
     }
 
-    // 如果已经生成，滚动到模型位置
+    // 如果已生成，滚动到位置
     if (interactiveModelLoaded) {
         const container = document.getElementById('interactiveModelContainer');
         if (container) {
             container.scrollIntoView({ behavior: 'smooth' });
         } else {
-            // 如果容器不存在，重置状态并重新生成
             interactiveModelLoaded = false;
         }
         setStatus('==> 交互式模型已存在', 'success');
@@ -696,7 +357,8 @@ btnInteractive.addEventListener('click', async () => {
 
     startLogPolling(sessionId);
     setStatus('正在生成交互式模型，请稍候...', 'loading');
-    btnInteractive.disabled = true;
+
+    const timer = startButtonTimer(btnInteractive, '交互式模型生成中');
 
     try {
         const response = await fetch('/api/interactive_model', {
@@ -709,19 +371,17 @@ btnInteractive.addEventListener('click', async () => {
 
         if (data.error) {
             setStatus('!!! ' + data.error, 'error');
-            btnInteractive.disabled = false;
+            if (timer) timer.stop();
             return;
         }
 
-        // 确保 resultsSection 存在
         const resultsSection = document.getElementById('resultsSection');
         if (!resultsSection) {
             setStatus('!!! 结果区域未找到', 'error');
-            btnInteractive.disabled = false;
+            if (timer) timer.stop();
             return;
         }
 
-        // 创建或获取容器
         let container = document.getElementById('interactiveModelContainer');
         if (!container) {
             container = document.createElement('div');
@@ -730,7 +390,6 @@ btnInteractive.addEventListener('click', async () => {
             resultsSection.appendChild(container);
         }
 
-        // 清空并填充内容
         container.innerHTML = `
             <h3>交互式3D地质体模型</h3>
             <div style="position:relative;padding-bottom:56.25%;height:0;overflow:hidden;border-radius:8px;">
@@ -744,16 +403,15 @@ btnInteractive.addEventListener('click', async () => {
 
         interactiveModelLoaded = true;
         resultsSection.classList.add('visible');
-        // 滚动到容器
         container.scrollIntoView({ behavior: 'smooth', block: 'start' });
 
         setStatus('==> 交互式模型生成完成', 'success');
-        btnInteractive.disabled = false;
+        if (timer) timer.stop();
 
     } catch (error) {
         stopLogPolling();
         setStatus('!!! 生成失败: ' + error.message, 'error');
-        btnInteractive.disabled = false;
+        if (timer) timer.stop();
     }
 });
 
@@ -878,26 +536,6 @@ function downloadAllViews(uid) {
     downloadAllAsZip(urls, 'drill_views.zip');
 }
 
-// 一次性下载带标注的地质体建模图
-function downloadAllModelViews() {
-    if (!modelData.labeled_views || modelData.labeled_views.length === 0) {
-        alert('没有标注图可下载');
-        return;
-    }
-    const urls = modelData.labeled_views.map(v => v.url);
-    downloadAllAsZip(urls, 'model_labeled_views.zip');
-}
-
-// 一次性下载无标注的地质体建模图
-function downloadAllUnlabeledViews() {
-    if (!modelData.unlabeled_views || modelData.unlabeled_views.length === 0) {
-        alert('没有无标注图可下载');
-        return;
-    }
-    const urls = modelData.unlabeled_views.map(v => v.url);
-    downloadAllAsZip(urls, 'model_unlabeled_views.zip');
-}
-
 function downloadImage(url) {
     const link = document.createElement('a');
     link.href = url;
@@ -943,35 +581,9 @@ window.downloadCurrentView = downloadCurrentView;
 window.downloadAllViews = downloadAllViews;
 
 // ==================== 初始化 ====================
-setStatus('请上传钻孔数据文件', 'info');
-
-
-// ==================== 初始化 ====================
-// 页面加载时自动加载模板数据
 document.addEventListener('DOMContentLoaded', function() {
     loadTemplateData();
     setStatus('已加载模板数据，可查看下方预览', 'info');
-    // 绑定“显示点位”按钮
-    // const btnShowPoints = document.getElementById('btnShowPoints');
-    // if (btnShowPoints) {
-    //     btnShowPoints.addEventListener('click', function() {
-    //        if (!zj_key) {
-    //             alert('天地图密钥未配置，无法加载地图');
-    //             return;
-    //         }
-    //         if (!previewData.points || previewData.points.length === 0) {
-    //             setStatus('!!! 暂无钻孔数据，请先上传文件', 'error');
-    //             return;
-    //         }
-    //         showPointsOnMainMap(); 
-    //     });
-    // } else {
-    //     console.warn('按钮 #btnShowPoints 未找到');
-    // }
-
-    if (document.getElementById('mainMap')) {
-        initMainMap();
-    }
 });
 
 
@@ -986,7 +598,6 @@ let currentTab = 'location';
 let currentPage = 1;
 let pageSize = 20;
 let previewDataSource = '模板数据';
-let mapMarkerGroup = null;
 
 // DOM 元素（弹窗相关）
 const previewModal = document.getElementById('previewModal');
@@ -1210,64 +821,6 @@ function updatePreviewData(data, isTemplate = true) {
     }
 }
 
-function updatePreviewMapMarkers() {
-    if (!previewMapInitialized) {
-        initPreviewMap();
-        if (!previewMap) return;
-    }
-
-    previewMarkerGroup.forEach(m => previewMap.removeOverLay(m));
-    previewMarkerGroup = [];
-
-    const points = previewData.points || [];
-    if (!points.length) {
-        const infoWin = new T.InfoWindow('暂无钻孔数据');
-        previewMap.openInfoWindow(infoWin, new T.LngLat(120.2, 30.3));
-        return;
-    }
-
-    const bounds = new T.LngLatBounds();
-
-
-    points.forEach(p => {
-        const lngLat = new T.LngLat(p.lat, p.lon);
-        const marker = new T.Marker(lngLat);
-
-        marker.addEventListener("click", function(e) {
-            const point = e.lnglat || lngLat;
-            const content = `
-                <div style="padding:6px 12px;font-size:13px;line-height:1.7;">
-                    <div style="font-weight:bold;font-size:15px;color:#1a73e8;border-bottom:1px solid #eee;margin-bottom:6px;">
-                        🔹 ${p.钻孔编号}
-                    </div>
-                    <div>经度 (lon): ${p.lon ? p.lon.toFixed(6) : '--'}</div>
-                    <div>纬度 (lat): ${p.lat ? p.lat.toFixed(6) : '--'}</div>
-                    <div>开孔坐标E: ${p.开孔坐标E || '--'} m</div>
-                    <div>开孔坐标N: ${p.开孔坐标N || '--'} m</div>
-                    <div>开孔高程R: ${p.开孔高程R || '--'} m</div>
-                    <div>钻孔长度: ${p.钻孔长度 || '--'} m</div>
-                </div>
-            `;
-            const infoWin = new T.InfoWindow();
-            infoWin.setContent(content);
-            previewMap.closeInfoWindow();
-            previewMap.openInfoWindow(infoWin, point);
-        });
-
-        previewMap.addOverLay(marker);
-        previewMarkerGroup.push(marker);
-        bounds.extend(lngLat);
-    });
-
-    if (previewMarkerGroup.length) {
-        if (previewMap.fitBounds) {
-            previewMap.fitBounds(bounds, { padding: 40 });
-        } else {
-            const center = bounds.getCenter();
-            previewMap.centerAndZoom(center, 10);
-        }
-    }
-}
 // 在页面加载时加载模板数据并更新预览
 async function loadTemplateData() {
     setStatus('加载模板数据...', 'loading');
@@ -1277,10 +830,7 @@ async function loadTemplateData() {
         if (data.success) {
             isTemplateData = true;
             currentData = data.data;
-            // 更新预览数据
             updatePreviewData(data.data, true);
-            // 原有的预览显示（保留兼容）
-            showDataPreview(data.data, true);
             setStatus('==> 模板数据加载成功，可点击「数据预览」查看', 'success');
         } else {
             setStatus('!!! 加载模板数据失败: ' + (data.error || '未知错误'), 'error');
@@ -1302,14 +852,13 @@ async function handleFile(file) {
 
     setStatus('正在上传文件...', 'loading');
     
-    // ====== 关键修复：在 try 外部定义 formData ======
     const formData = new FormData();
     formData.append('file', file);
 
     try {
-        const response = await fetch('/api/upload', { 
-            method: 'POST', 
-            body: formData 
+        const response = await fetch('/api/upload', {
+            method: 'POST',
+            body: formData
         });
         const data = await response.json();
         if (data.error) {
@@ -1318,23 +867,19 @@ async function handleFile(file) {
         }
         sessionId = data.session_id;
         filePath = data.path;
-        // 更新界面信息
         fileInfo.style.display = 'flex';
         uploadArea.style.display = 'none';
         fileName.textContent = data.filename;
         fileSize.textContent = formatFileSize(file.size);
-        // 加载数据并更新预览
         await loadFileData(filePath);
         setButtonsEnabled(true);
         setStatus('==> 文件上传成功: ' + data.filename, 'success');
-        clearResults();
     } catch (error) {
         setStatus('!!! 上传失败: ' + error.message, 'error');
     }
 }
 
 async function loadFileData(path) {
-    console.log('loadFileData 被调用，路径:', path);
     try {
         const response = await fetch('/api/file_info', {
             method: 'POST',
@@ -1342,18 +887,15 @@ async function loadFileData(path) {
             body: JSON.stringify({ path: path })
         });
         const result = await response.json();
-        console.log('loadFileData 返回结果:', result);
         if (result.success) {
             updatePreviewData(result.data, false);
             if (currentTab === 'map' && previewMap) {
                 updatePreviewMapMarkers();
             }
         } else {
-            console.error('后端返回错误:', result.error);
             setStatus('!!! ' + result.error, 'error');
         }
     } catch (error) {
-        console.error('loadFileData 异常:', error);
         setStatus('!!! 加载数据失败: ' + error.message, 'error');
     }
 }
@@ -1366,7 +908,7 @@ removeFileBtn.addEventListener('click', () => {
     sessionId = null;
     filePath = null;
     setButtonsEnabled(false);
-    clearResults();
+    // clearResults();
     // 恢复模板数据
     if (currentData) {
         updatePreviewData(currentData, true);

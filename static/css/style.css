@@ -643,3 +643,67 @@ body {
     .modal-controls { flex-direction: column; align-items: stretch; }
     .carousel-slide img { max-height: 300px; }
 }
+/* ==================== 按钮"计算中"状态 ==================== */
+/* 按钮变灰 + 禁用 */
+.btn.loading {
+    background: #999 !important;
+    color: rgba(255, 255, 255, 0.85) !important;
+    cursor: not-allowed;
+    pointer-events: none;
+    opacity: 0.9;
+}
+
+/* 按钮内部左侧转圈（可选，如果你希望在按钮内部也转圈） */
+.btn.loading::before {
+    content: '';
+    display: inline-block;
+    width: 12px;
+    height: 12px;
+    border: 2px solid rgba(255, 255, 255, 0.4);
+    border-top-color: white;
+    border-radius: 50%;
+    animation: btn-spin 0.8s linear infinite;
+    margin-right: 8px;
+    vertical-align: middle;
+}
+
+@keyframes btn-spin {
+    to { transform: rotate(360deg); }
+}
+
+/* ==================== 按钮下方的计时器提示行 ==================== */
+.btn-timer {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    margin-top: 6px;
+    font-size: 13px;
+    color: #555;
+    opacity: 1;
+    transition: opacity 0.3s ease;
+    /* 按钮下方多出一行，其他按钮会下移（按你的选择 B） */
+    height: 22px;
+    line-height: 22px;
+}
+
+.btn-timer.hidden {
+    opacity: 0;
+    height: 0;
+    margin-top: 0;
+    overflow: hidden;
+    pointer-events: none;
+}
+
+/* 计时器左侧的深灰色转圈 */
+.btn-timer::before {
+    content: '';
+    display: inline-block;
+    width: 14px;
+    height: 14px;
+    border: 2px solid rgba(85, 85, 85, 0.25);
+    border-top-color: #555;
+    border-radius: 50%;
+    animation: btn-spin 0.8s linear infinite;
+    flex-shrink: 0;
+}

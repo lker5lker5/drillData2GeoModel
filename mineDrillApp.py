@@ -5,18 +5,12 @@ from flask import Flask, render_template, request, jsonify, send_file, send_from
 import os
 from io import BytesIO
 import uuid
-import json
 from datetime import datetime
-import shutil
 import threading
 import time
 import webbrowser
 import pandas as pd
-import numpy as np
-import geopandas as gpd
 import zipfile
-import matplotlib.pyplot as plt
-from mpl_toolkits.mplot3d import Axes3D
 from config import *
 from processors import *
 from collections import defaultdict
@@ -48,12 +42,6 @@ def log_and_print(session_id, msg, msg_type='info'):
     print(msg)
     add_log(session_id, msg, msg_type)
 
-def clean_dataframe(df):
-    """删除全为空值的列和行"""
-    df = df.dropna(axis=1, how='all')  # 删除全为空值的列
-    df = df.dropna(axis=0, how='all')  # 删除全为空值的行
-    return df
-
 # ==================== 路由 ====================
 @app.route('/api/logs/<session_id>')
 def get_logs(session_id):
@@ -66,11 +54,6 @@ def get_logs(session_id):
         'logs': new_logs,
         'latest': logs[-1]['time'] if logs else 0
     })
-
-# 清理日志（可选，在会话完成后调用）
-def clear_logs(session_id):
-    if session_id in log_storage:
-        del log_storage[session_id]
 
 @app.route('/')
 def index():
@@ -388,7 +371,7 @@ def generate_model_api():
 
 @app.route('/api/ai_modeling', methods=['POST'])
 def ai_modeling_api():
-    """AI建模 - 使用侧视图和前视图生成4张AI建模图"""
+    """AI建模 - 使用3张参考图生成AI建模图"""
     data = request.json
     session_id = data.get('session_id')
     color_map = data.get('color_map', {})
@@ -397,30 +380,43 @@ def ai_modeling_api():
         return jsonify({'error': '缺少必要参数'}), 400
     
     try:
-        # 只使用侧视图和前视图
-        target_views = ['side_view', 'front_view']
+        # ========== 按 AI_REFERENCE_ORDERS 选取参考图 ==========
         image_paths = []
-        
-        for view_name in target_views:
-            pattern = f'unlabeled_{view_name}'
+        for order in AI_REFERENCE_IMGS:
+            # 找到对应 order 的视图
+            view = next((v for v in VIEW_CONFIGS if v.get('order') == order), None)
+            if not view:
+                log_and_print(session_id, f"!!! 未找到 order={order} 的视图配置")
+                continue
+            
+            order_prefix = f'{order:02d}_'
+            pattern_suffix = f'unlabeled_{order_prefix}{view["name"]}.png'
+            
             found = False
-            for filename in os.listdir(OUTPUT_FOLDER):
-                if pattern in filename and filename.endswith('.png'):
-                    path = os.path.join(OUTPUT_FOLDER, filename)
-                    image_paths.append(path)
-                    found = True
-                    log_and_print(session_id, f"==> 找到参考图: {filename}")
+            # 搜索 outputs 目录下所有可能的位置
+            for root, dirs, files in os.walk(OUTPUT_FOLDER):
+                for filename in files:
+                    if filename.endswith(pattern_suffix):
+                        full_path = os.path.join(root, filename)
+                        image_paths.append(full_path)
+                        log_and_print(session_id, f"==> 图{order} ({view['label']}): {filename}")
+                        found = True
+                        break
+                if found:
                     break
+            
             if not found:
-                log_and_print(session_id, f"!!! 未找到 {view_name} 对应的图片")
+                log_and_print(session_id, f"!!! 未找到 图{order} 对应的图片: {pattern_suffix}")
         
-        if len(image_paths) < 2:
-            return jsonify({'error': f'未找到足够的参考图（需要侧视图和前视图），当前找到 {len(image_paths)} 张'}), 400
+        if len(image_paths) < 3:
+            return jsonify({
+                'error': f'需要3张参考图，当前只找到 {len(image_paths)} 张。请先生成建模示意图。'
+            }), 400
         
         log_and_print(session_id, f"==> 使用参考图: {[os.path.basename(p) for p in image_paths]}")
         log_and_print(session_id, f"==> 颜色映射: {color_map}")
         
-        # 调用Qwen API（返回4张图片URL列表）
+        # 调用Qwen API
         image_urls, error = call_qwen_api_for_modeling(image_paths, color_map)
         
         if error:
@@ -430,7 +426,7 @@ def ai_modeling_api():
         import requests
         saved_paths = []
         for idx, img_url in enumerate(image_urls, 1):
-            local_filename = f'ai_model_result_{datetime.now().strftime("%y%m%d%H%M")}_{idx}.png'
+            local_filename = f'ai_model_result_{datetime.now().strftime("%y%m%d%H%M%S")}_{idx}.png'
             local_path = os.path.join(OUTPUT_FOLDER, local_filename)
             try:
                 resp = requests.get(img_url, timeout=30)
@@ -442,7 +438,7 @@ def ai_modeling_api():
                         'url': f'/outputs/{local_filename}',
                         'index': idx
                     })
-                    log_and_print(session_id, f"==> AI模型图 {idx} 已保存: {local_path}")
+                    log_and_print(session_id, f"==> AI模型图 {idx} 已保存")
                 else:
                     log_and_print(session_id, f"!!! 下载AI模型图 {idx} 失败: HTTP {resp.status_code}")
             except Exception as e:
@@ -463,7 +459,6 @@ def ai_modeling_api():
         import traceback
         traceback.print_exc()
         return jsonify({'error': str(e)}), 500
-
 
 @app.route('/api/interactive_model', methods=['POST'])
 def interactive_model_api():

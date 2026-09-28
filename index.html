@@ -50,7 +50,6 @@
                     <div class="template-link">
                         <a href="/api/template" download>📥 下载模板</a>
                         <button class="btn-preview" id="btnPreviewData">📊 预览数据</button>
-                        <!-- <button class="btn-preview" id="btnShowPoints">📍 显示点位</button> -->
                     </div>
                 </div>
 
@@ -68,10 +67,7 @@
                     <button class="btn btn-info" id="btnInteractive" disabled>
                         <span class="icon">🌐</span> 交互式3D模型
                     </button>
-                    <button class="btn btn-info" id="btnMap" disabled>
-                        <span class="icon">🗺️</span> 钻孔分布地图
-                    </button>
-                </div>
+                    </div>
 
                 <!-- 状态提示（固定在此） -->
                 <div class="status-section" id="statusSection">
@@ -161,8 +157,6 @@
         </div>
     </div>
 
-    <!-- Leaflet JS -->
-    <!-- <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script> -->
     <!-- 配置 -->
     <script>
         const ZJ_TIANDITU_KEY = '{{ zj_key }}';

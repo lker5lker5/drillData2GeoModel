@@ -67,7 +67,30 @@
                     <button class="btn btn-info" id="btnInteractive" disabled>
                         <span class="icon">🌐</span> 交互式3D模型
                     </button>
+                    <button class="btn btn-warning" id="btnMultiviewAI" disabled>
+                        <span class="icon">🎨</span> 多视角纹理升级
+                    </button>
                     </div>
+
+                <!-- ==================== 高级参数面板 ==================== -->
+                <div class="params-panel" id="paramsPanel">
+                    <div class="params-header" id="paramsHeader">
+                        <span class="params-title">⚙️ 高级参数</span>
+                        <span class="params-toggle" id="paramsToggle">▶</span>
+                    </div>
+                    <div class="params-body" id="paramsBody" style="display: none;">
+                        <div class="params-loading" id="paramsLoading">
+                            请先上传文件，展开后加载参数...
+                        </div>
+                        <div class="params-content" id="paramsContent" style="display:none;">
+                            <!-- 参数由 JS 动态生成 -->
+                        </div>
+                        <button class="btn btn-primary params-apply-btn" id="btnApplyParams" style="display:none;">
+                            应用参数
+                        </button>
+                        <p class="params-hint" id="paramsHint"></p>
+                    </div>
+                </div>
 
                 <!-- 状态提示（固定在此） -->
                 <div class="status-section" id="statusSection">

@@ -179,11 +179,81 @@ def upload_file():
     # 保存文件
     file_path = os.path.join(session_dir, file.filename)
     file.save(file_path)
-    
+
+    # ========== 清除该 session 的缓存 ==========
+    from cache_manager import clear_cache
+    clear_cache(session_id)
+    # =========================================
+
     return jsonify({
         'session_id': session_id,
         'filename': file.filename,
         'path': file_path
+    })
+
+
+@app.route('/api/session_params', methods=['GET'])
+def get_session_params():
+    """
+    获取当前会话的参数和参数元信息。
+    """
+    session_id = request.args.get('session_id')
+
+    from params_manager import load_session_params, get_frontend_meta, compute_params_hash
+
+    params = load_session_params(session_id) if session_id else {}
+    meta = get_frontend_meta()
+    params_hash = compute_params_hash(params)
+
+    return jsonify({
+        'success': True,
+        'params': params,
+        'meta': meta,
+        'params_hash': params_hash
+    })
+
+
+@app.route('/api/save_params', methods=['POST'])
+def save_params_api():
+    """
+    保存当前会话的参数。
+    如果参数与旧参数不同，清除模型缓存。
+    """
+    data = request.json
+    session_id = data.get('session_id')
+    params = data.get('params', {})
+
+    if not session_id:
+        return jsonify({'error': '缺少 session_id'}), 400
+
+    from params_manager import (
+        load_session_params, save_session_params,
+        compute_params_hash
+    )
+    from cache_manager import clear_cache_by_params_change
+
+    # 读取旧参数
+    old_params = load_session_params(session_id)
+    old_hash = compute_params_hash(old_params)
+
+    # 保存新参数
+    ok, err = save_session_params(session_id, params)
+    if not ok:
+        return jsonify({'error': err}), 400
+
+    # 计算新哈希
+    new_params = load_session_params(session_id)
+    new_hash = compute_params_hash(new_params)
+
+    # 如果参数变化，清除缓存
+    if old_hash != new_hash:
+        clear_cache_by_params_change(session_id)
+        log_and_print(session_id, f"==> 参数已变更，模型缓存已清除")
+
+    return jsonify({
+        'success': True,
+        'params': new_params,
+        'params_hash': new_hash
     })
 
 
@@ -243,6 +313,38 @@ def generate_model_api():
         return jsonify({'error': '文件不存在'}), 400
 
     try:
+        # ========== 读取用户参数 ==========
+        from params_manager import load_session_params, compute_params_hash
+        user_params = load_session_params(session_id)
+        params_hash = compute_params_hash(user_params)
+
+        rbf_function = user_params.get('RBF_FUNCTION', RBF_FUNCTION)
+        rbf_smooth = user_params.get('RBF_SMOOTH', RBF_SMOOTH)
+        grid_resolution = user_params.get('GRID_RESOLUTION', GRID_RESOLUTION)
+        n_layers = user_params.get('N_LAYERS', N_LAYERS)
+        drill_style = user_params.get('DRILL_STYLE', DRILL_STYLE)
+        drill_radius = user_params.get('DRILL_RADIUS', DRILL_RADIUS)
+
+        log_and_print(session_id, f"==> 用户参数: RBF={rbf_function}, 平滑度={rbf_smooth}, 网格={grid_resolution}, 层数={n_layers}, 钻孔样式={drill_style}, 半径={drill_radius}")
+        # =============================
+
+        # ========== 缓存查询 ==========
+        from cache_manager import compute_file_hash, get_cached_result, save_cached_result
+        from config import CACHE_ENABLED
+
+        input_hash = None
+        if CACHE_ENABLED:
+            input_hash = compute_file_hash(file_path)
+            cached = get_cached_result(session_id, 'model', input_hash, params_hash)
+            if cached:
+                log_and_print(session_id, "==> 命中缓存，直接返回建模结果")
+                return jsonify({
+                    'success': True,
+                    'from_cache': True,
+                    **cached['result']
+                })
+        # =============================
+
         # ========== 1. 读取数据 ==========
         log_and_print(session_id, "正在读取数据...")
         loc_df = pd.read_excel(file_path, sheet_name='定位表')
@@ -254,7 +356,11 @@ def generate_model_api():
         # ========== 2. 构建地质体（仅一次，坐标归一化 + 过滤） ==========
         log_and_print(session_id, "正在构建地质体模型...")
         bodies, volume_data = build_geological_bodies_with_volume_v2(
-            loc_df, litho_df, survey_df, n_layers=N_LAYERS
+            loc_df, litho_df, survey_df,
+            n_layers=n_layers,
+            rbf_function=rbf_function,
+            rbf_smooth=rbf_smooth,
+            grid_resolution=grid_resolution
         )
 
         if not bodies or not volume_data:
@@ -283,7 +389,8 @@ def generate_model_api():
             try:
                 labeled_path = draw_single_model_view(
                     volume_data, loc_df, survey_df, litho_df,
-                    view, output_dir, base_name, labeled=True
+                    view, output_dir, base_name, labeled=True,
+                    drill_style=drill_style, drill_radius=drill_radius
                 )
                 results['labeled'].append({
                     'order': order,
@@ -303,7 +410,8 @@ def generate_model_api():
             try:
                 unlabeled_path = draw_single_model_view(
                     volume_data, loc_df, survey_df, litho_df,
-                    view, output_dir, base_name, labeled=False
+                    view, output_dir, base_name, labeled=False,
+                    drill_style=drill_style, drill_radius=drill_radius
                 )
                 results['unlabeled'].append({
                     'order': order,
@@ -341,13 +449,23 @@ def generate_model_api():
         log_and_print(session_id, f"==> 最终颜色映射: {len(color_map)} 项")
         log_and_print(session_id, "==> 建模示意图生成完成")
 
-        # ========== 8. 返回结果 ==========
-        return jsonify({
-            'success': True,
+        # ========== 8. 保存缓存 ==========
+        result_data = {
             'labeled_views': results['labeled'],
             'unlabeled_views': results['unlabeled'],
-            'session_id': session_id,
             'color_map': color_map
+        }
+
+        if CACHE_ENABLED and input_hash:
+            save_cached_result(session_id, 'model', input_hash, result_data, output_dir, params_hash)
+            log_and_print(session_id, "==> 已保存建模结果到缓存")
+        # =============================
+
+        # ========== 9. 返回结果 ==========
+        return jsonify({
+            'success': True,
+            'from_cache': False,
+            **result_data
         })
 
     except Exception as e:
@@ -375,11 +493,35 @@ def ai_modeling_api():
     data = request.json
     session_id = data.get('session_id')
     color_map = data.get('color_map', {})
-    
+    file_path = data.get('file_path')  # 用于缓存的文件路径
+
     if not session_id:
         return jsonify({'error': '缺少必要参数'}), 400
-    
+
     try:
+        # ========== 读取用户参数 ==========
+        from params_manager import load_session_params, compute_params_hash
+        user_params = load_session_params(session_id)
+        params_hash = compute_params_hash(user_params)
+        # =============================
+
+        # ========== 缓存查询 ==========
+        from cache_manager import compute_file_hash, get_cached_result, save_cached_result
+        from config import CACHE_ENABLED
+
+        input_hash = None
+        if CACHE_ENABLED and file_path:
+            input_hash = compute_file_hash(file_path)
+            cached = get_cached_result(session_id, 'ai_model', input_hash, params_hash)
+            if cached:
+                log_and_print(session_id, "==> 命中缓存，直接返回 AI 建模结果")
+                return jsonify({
+                    'success': True,
+                    'from_cache': True,
+                    **cached['result']
+                })
+        # =============================
+
         # ========== 按 AI_REFERENCE_ORDERS 选取参考图 ==========
         image_paths = []
         for order in AI_REFERENCE_IMGS:
@@ -435,6 +577,7 @@ def ai_modeling_api():
                         f.write(resp.content)
                     saved_paths.append({
                         'local_path': local_path,
+                        'path': local_path,
                         'url': f'/outputs/{local_filename}',
                         'index': idx
                     })
@@ -446,14 +589,53 @@ def ai_modeling_api():
         
         if not saved_paths:
             return jsonify({'error': '所有AI模型图下载失败'}), 500
-        
+
+        # ========== 自动评分 ==========
+        from scoring import rank_ai_candidates
+
+        # 找参考图：Python 的图1 无标注图
+        ref_image_path = None
+        for f in sorted(os.listdir(OUTPUT_FOLDER)):
+            if 'unlabeled_01_main_view' in f and f.endswith('.png'):
+                ref_image_path = os.path.join(OUTPUT_FOLDER, f)
+                break
+
+        if ref_image_path and len(saved_paths) >= 2:
+            ranking = rank_ai_candidates(saved_paths, ref_image_path)
+            log_and_print(session_id, f"==> AI 图评分完成，最优候选: 第{ranking['best_index']}张")
+
+            result_data = {
+                'candidates': ranking['ranked'],
+                'best_index': ranking['best_index'],
+                'is_close': ranking['is_close'],
+                'reference_images': [os.path.basename(p) for p in image_paths],
+                'count': len(saved_paths)
+            }
+        else:
+            # 无法评分，返回原始列表
+            result_data = {
+                'candidates': [
+                    {'path': p['path'], 'url': p['url'], 'index': p['index'], 'scores': {}}
+                    for p in saved_paths
+                ],
+                'best_index': 1,
+                'is_close': False,
+                'reference_images': [os.path.basename(p) for p in image_paths],
+                'count': len(saved_paths)
+            }
+        # =============================
+
+        # ========== 保存缓存 ==========
+        if CACHE_ENABLED and input_hash:
+            save_cached_result(session_id, 'ai_model', input_hash, result_data, OUTPUT_FOLDER, params_hash)
+        # =============================
+
         return jsonify({
             'success': True,
-            'image_urls': [p['url'] for p in saved_paths],
-            'reference_images': [os.path.basename(p) for p in image_paths],
-            'count': len(saved_paths)
+            'from_cache': False,
+            **result_data
         })
-        
+
     except Exception as e:
         log_and_print(session_id, f"!!! AI建模失败: {str(e)}")
         import traceback
@@ -474,16 +656,30 @@ def interactive_model_api():
         return jsonify({'error': '文件不存在'}), 400
     
     try:
+        from params_manager import load_session_params
+
+        user_params = load_session_params(session_id)
+        n_layers = user_params.get('N_LAYERS', N_LAYERS)
+        rbf_function = user_params.get('RBF_FUNCTION', RBF_FUNCTION)
+        rbf_smooth = user_params.get('RBF_SMOOTH', RBF_SMOOTH)
+        grid_resolution = user_params.get('GRID_RESOLUTION', GRID_RESOLUTION)
+        drill_style = user_params.get('DRILL_STYLE', DRILL_STYLE)
+        drill_radius = user_params.get('DRILL_RADIUS', DRILL_RADIUS)
+
         loc_df = pd.read_excel(file_path, sheet_name='定位表')
         survey_df = pd.read_excel(file_path, sheet_name='测斜表')
         litho_df = pd.read_excel(file_path, sheet_name='岩性表')
-        
+
         base_name = f'interactive_{datetime.now().strftime("%y%m%d%H%M")}'
         output_dir = OUTPUT_FOLDER  # 直接使用输出根目录
         os.makedirs(output_dir, exist_ok=True)
-        
+
         html_path = generate_interactive_model(
-            loc_df, survey_df, litho_df, output_dir, base_name)
+            loc_df, survey_df, litho_df, output_dir, base_name,
+            drill_style=drill_style, drill_radius=drill_radius,
+            n_layers=n_layers, rbf_function=rbf_function,
+            rbf_smooth=rbf_smooth, grid_resolution=grid_resolution
+        )
         
         if not html_path:
             log_and_print(session_id, '!!! 无法生成交互式模型')
@@ -497,6 +693,315 @@ def interactive_model_api():
         
     except Exception as e:
         log_and_print(session_id, f"!!! 生成交互式模型失败: {str(e)}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/multiview_ai', methods=['POST'])
+def multiview_ai_api():
+    """
+    基于最优 AI 图，生成多视角 AI 图。
+    """
+    data = request.json
+    session_id = data.get('session_id')
+    best_ai_path = data.get('best_ai_path')
+    view_count = data.get('view_count', MULTIVIEW_DEFAULT_COUNT)
+    color_map = data.get('color_map', {})
+
+    if not session_id or not best_ai_path:
+        return jsonify({'error': '缺少必要参数'}), 400
+
+    if view_count < 1 or view_count > 4:
+        return jsonify({'error': 'view_count 必须在 1~4 之间'}), 400
+
+    if not os.path.exists(best_ai_path):
+        return jsonify({'error': f'主锚图不存在: {best_ai_path}'}), 400
+
+    try:
+        from config import MULTIVIEW_VIEW_ORDERS, VIEW_CONFIGS
+        from processors import call_qwen_api_for_multiview, add_annotations_to_ai_image
+
+        # 选取要生成的视角
+        target_orders = MULTIVIEW_VIEW_ORDERS[:view_count]
+
+        images = []
+        success_count = 0
+
+        for order in target_orders:
+            view = next((v for v in VIEW_CONFIGS if v.get('order') == order), None)
+            if not view:
+                continue
+
+            # 查找对应的 Python 无标注图（带序号前缀）
+            py_image_path = None
+            pattern = f'unlabeled_{order:02d}_{view["name"]}'
+            for f in sorted(os.listdir(OUTPUT_FOLDER)):
+                if pattern in f and f.endswith('.png') and 'ai_' not in f and 'multiview' not in f:
+                    py_image_path = os.path.join(OUTPUT_FOLDER, f)
+                    break
+
+            if not py_image_path:
+                log_and_print(session_id, f"!!! 未找到 图{order} 的 Python 图")
+                continue
+
+            # 调用 API 生成
+            log_and_print(session_id, f"==> 正在生成 图{order} ({view['label']})")
+            try:
+                ai_urls, error = call_qwen_api_for_multiview(
+                    anchor_image=best_ai_path,
+                    target_image=py_image_path,
+                    color_map=color_map
+                )
+
+                if error or not ai_urls:
+                    log_and_print(session_id, f"!!! 图{order} 生成失败: {error}")
+                    images.append({
+                        'view_name': view['name'],
+                        'view_label': view['label'],
+                        'order': order,
+                        'url': f'/outputs/{os.path.basename(py_image_path)}',
+                        'has_ai': False
+                    })
+                    continue
+
+                # 下载 AI 图
+                ai_url = ai_urls[0]
+                local_filename = f'multiview_ai_{order:02d}_{view["name"]}.png'
+                local_path = os.path.join(OUTPUT_FOLDER, local_filename)
+
+                import requests
+                resp = requests.get(ai_url, timeout=60)
+                if resp.status_code == 200:
+                    with open(local_path, 'wb') as f:
+                        f.write(resp.content)
+
+                    images.append({
+                        'view_name': view['name'],
+                        'view_label': view['label'],
+                        'order': order,
+                        'url': f'/outputs/{local_filename}',
+                        'path': local_path,
+                        'has_ai': True
+                    })
+                    success_count += 1
+                    log_and_print(session_id, f"==> 图{order} 生成成功")
+                else:
+                    log_and_print(session_id, f"!!! 图{order} 下载失败")
+                    images.append({
+                        'view_name': view['name'],
+                        'view_label': view['label'],
+                        'order': order,
+                        'url': f'/outputs/{os.path.basename(py_image_path)}',
+                        'has_ai': False
+                    })
+            except Exception as e:
+                log_and_print(session_id, f"!!! 图{order} 异常: {e}")
+                images.append({
+                    'view_name': view['name'],
+                    'view_label': view['label'],
+                    'order': order,
+                    'url': f'/outputs/{os.path.basename(py_image_path)}',
+                    'has_ai': False
+                })
+
+        # ========== 全部失败时终止 ==========
+        if success_count == 0:
+            return jsonify({
+                'error': '所有视角的 AI 生成均失败，请重试',
+                'images': images
+            }), 500
+        # =====================================
+
+        # ========== 生成带标注版 ==========
+        # 默认 Z 轴范围
+        z_min, z_max = -300, 400
+        # 尝试从缓存获取更精确的 Z 轴范围
+        try:
+            from cache_manager import get_cached_result
+            cached = get_cached_result(session_id, 'model', None)
+        except Exception:
+            pass
+
+        annotated_images = []
+        for img in images:
+            if img.get('has_ai'):
+                annotated_filename = f'annotated_{os.path.basename(img["url"])}'
+                annotated_path = os.path.join(OUTPUT_FOLDER, annotated_filename)
+                result_path = add_annotations_to_ai_image(
+                    img['path'], annotated_path, z_min, z_max
+                )
+                annotated_images.append({
+                    **img,
+                    'annotated_url': f'/outputs/{annotated_filename}' if result_path else img['url']
+                })
+            else:
+                annotated_images.append({
+                    **img,
+                    'annotated_url': img['url']
+                })
+        # ==================================
+
+        return jsonify({
+            'success': True,
+            'images': images,
+            'annotated_images': annotated_images,
+            'success_count': success_count,
+            'total_count': len(images)
+        })
+
+    except Exception as e:
+        log_and_print(session_id, f"!!! 多视角生成失败: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/multiview_texture_upgrade', methods=['POST'])
+def multiview_texture_upgrade_api():
+    """
+    多视角纹理升级：
+    1. Python 生成 3 张带黑色描边的几何图
+    2. 每张独立调用 AI 升级纹理
+    3. 遮罩合成（几何由 Python 100% 控制，AI 只贡献纹理）
+    4. 色调统一
+    """
+    data = request.json
+    session_id = data.get('session_id')
+    view_count = data.get('view_count', 3)
+    color_map = data.get('color_map', {})
+    file_path = data.get('file_path')  # 用于读取原始数据重建 volume_data
+
+    if not session_id:
+        return jsonify({'error': '缺少 session_id'}), 400
+
+    if not color_map:
+        return jsonify({'error': '缺少颜色映射，请先生成建模图'}), 400
+
+    if not file_path or not os.path.exists(file_path):
+        return jsonify({'error': '数据文件不存在，请先上传'}), 400
+
+    try:
+        from config import MULTIVIEW_VIEW_ORDERS, VIEW_CONFIGS
+        from processors import (
+            plot_geometry_with_black_edges,
+            generate_ai_texture_for_single_view,
+            composite_ai_texture_with_geometry,
+            unify_multiview_color_tones
+        )
+
+        # ========== 读取数据并构建地质体 ==========
+        log_and_print(session_id, "正在读取数据并构建地质体模型...")
+        loc_df = pd.read_excel(file_path, sheet_name='定位表')
+        survey_df = pd.read_excel(file_path, sheet_name='测斜表')
+        litho_df = pd.read_excel(file_path, sheet_name='岩性表')
+
+        from params_manager import load_session_params
+        user_params = load_session_params(session_id)
+        n_layers = user_params.get('N_LAYERS', N_LAYERS)
+        rbf_function = user_params.get('RBF_FUNCTION', RBF_FUNCTION)
+        rbf_smooth = user_params.get('RBF_SMOOTH', RBF_SMOOTH)
+        grid_resolution = user_params.get('GRID_RESOLUTION', GRID_RESOLUTION)
+        drill_style = user_params.get('DRILL_STYLE', DRILL_STYLE)
+        drill_radius = user_params.get('DRILL_RADIUS', DRILL_RADIUS)
+
+        bodies, volume_data = build_geological_bodies_with_volume_v2(
+            loc_df, litho_df, survey_df,
+            n_layers=n_layers,
+            rbf_function=rbf_function,
+            rbf_smooth=rbf_smooth,
+            grid_resolution=grid_resolution
+        )
+
+        if not volume_data:
+            return jsonify({'error': '未生成地质体数据'}), 500
+
+        log_and_print(session_id, f"==> 成功构建 {len(volume_data)} 个地质体")
+
+        # ========== Step 1: 生成几何图（带黑色描边） ==========
+        log_and_print(session_id, "==> 生成几何约束图（带黑色描边）...")
+        geometry_paths = []  # (order, view, geo_path)
+        for order in MULTIVIEW_VIEW_ORDERS[:view_count]:
+            view = next((v for v in VIEW_CONFIGS if v.get('order') == order), None)
+            if not view:
+                log_and_print(session_id, f"!!! 未找到 order={order} 的视角配置")
+                continue
+
+            geo_path = plot_geometry_with_black_edges(
+                volume_data, view, OUTPUT_FOLDER, f'multiview_tex_{session_id}'
+            )
+            geometry_paths.append((order, view, geo_path))
+            log_and_print(session_id, f"==> 几何图 图{order} 已生成")
+
+        if not geometry_paths:
+            return jsonify({'error': '所有几何图生成失败'}), 500
+
+        # ========== Step 2: 每张独立调用 AI 升级纹理 ==========
+        log_and_print(session_id, "==> 开始 AI 纹理升级...")
+        import requests as http_requests
+        ai_paths = []  # (order, view, geo_path, ai_path)
+        success_count = 0
+
+        for order, view, geo_path in geometry_paths:
+            log_and_print(session_id, f"==> 正在生成 图{order} ({view['label']}) 的 AI 纹理")
+
+            ai_url, error = generate_ai_texture_for_single_view(geo_path, color_map)
+
+            if error or not ai_url:
+                log_and_print(session_id, f"!!! 图{order} AI 生成失败: {error}")
+                continue
+
+            # 下载 AI 图
+            local_filename = f'multiview_ai_raw_{order:02d}_{view["name"]}.png'
+            local_path = os.path.join(OUTPUT_FOLDER, local_filename)
+
+            resp = http_requests.get(ai_url, timeout=60)
+            if resp.status_code == 200:
+                with open(local_path, 'wb') as f:
+                    f.write(resp.content)
+                ai_paths.append((order, view, geo_path, local_path))
+                success_count += 1
+                log_and_print(session_id, f"==> 图{order} AI 纹理生成成功")
+            else:
+                log_and_print(session_id, f"!!! 图{order} 下载失败: HTTP {resp.status_code}")
+
+        if success_count == 0:
+            return jsonify({'error': '所有视角 AI 纹理升级均失败，请重试'}), 500
+
+        # ========== Step 3: 遮罩合成 ==========
+        log_and_print(session_id, "==> 正在进行遮罩合成...")
+        composite_paths = []
+        for order, view, geo_path, ai_path in ai_paths:
+            out_filename = f'multiview_composite_{order:02d}_{view["name"]}.png'
+            out_path = os.path.join(OUTPUT_FOLDER, out_filename)
+            composite_ai_texture_with_geometry(geo_path, ai_path, out_path)
+            composite_paths.append(out_path)
+
+        # ========== Step 4: 色调统一 ==========
+        log_and_print(session_id, "==> 正在进行色调统一...")
+        unified_paths = unify_multiview_color_tones(composite_paths)
+
+        # ========== 组织返回数据 ==========
+        images = []
+        for i, (order, view, _, _) in enumerate(ai_paths):
+            images.append({
+                'view_name': view['name'],
+                'view_label': view['label'],
+                'order': order,
+                'url': f'/outputs/{os.path.basename(unified_paths[i])}',
+                'has_ai': True
+            })
+
+        log_and_print(session_id, f"==> 多视角纹理升级完成（成功 {success_count}/{len(geometry_paths)}）")
+        return jsonify({
+            'success': True,
+            'images': images,
+            'success_count': success_count,
+            'total_count': len(geometry_paths)
+        })
+
+    except Exception as e:
+        log_and_print(session_id, f"!!! 多视角纹理升级失败: {e}")
+        import traceback
+        traceback.print_exc()
         return jsonify({'error': str(e)}), 500
 
 
@@ -544,6 +1049,19 @@ def open_browser():
     webbrowser.open(f'http://127.0.0.1:{PORT}')
 
 
+def cache_cleanup_daemon():
+    """后台线程：定期清理过期缓存"""
+    import time
+    from cache_manager import cleanup_expired_cache
+    from config import CACHE_CLEANUP_INTERVAL
+    while True:
+        try:
+            cleanup_expired_cache()
+        except Exception as e:
+            print(f"!!! 缓存清理异常: {e}")
+        time.sleep(CACHE_CLEANUP_INTERVAL)
+
+
 if __name__ == '__main__':
     print('======================================================================')
     print('  地质体建模 Web 应用')
@@ -552,8 +1070,12 @@ if __name__ == '__main__':
     print(f'  上传目录: {UPLOAD_FOLDER}')
     print(f'  输出目录: {OUTPUT_FOLDER}')
     print('======================================================================')
-    
+
+    # 启动缓存清理线程
+    threading.Thread(target=cache_cleanup_daemon, daemon=True).start()
+    print('==> 缓存清理线程已启动')
+
     # 自动打开浏览器
     threading.Thread(target=open_browser, daemon=True).start()
-    
+
     app.run(host=HOST, port=PORT, debug=DEBUG)

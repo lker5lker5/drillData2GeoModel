@@ -707,3 +707,275 @@ body {
     animation: btn-spin 0.8s linear infinite;
     flex-shrink: 0;
 }
+
+/* ==================== AI 候选图展示 ==================== */
+.ai-candidates-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 20px;
+    margin-top: 16px;
+}
+
+.ai-candidate-card {
+    background: #fafafa;
+    border: 2px solid #e0e0e0;
+    border-radius: 8px;
+    padding: 12px;
+    position: relative;
+    transition: border-color 0.3s, box-shadow 0.3s;
+}
+
+.ai-candidate-card.best {
+    border-color: #2E7D32;
+    background: #f1f8e9;
+}
+
+.ai-candidate-card.selected {
+    border-color: #1565C0;
+    box-shadow: 0 0 0 3px rgba(21, 101, 192, 0.2);
+}
+
+.best-badge {
+    position: absolute;
+    top: 12px;
+    right: 12px;
+    background: #2E7D32;
+    color: white;
+    padding: 4px 10px;
+    border-radius: 4px;
+    font-size: 12px;
+    font-weight: bold;
+    z-index: 10;
+}
+
+.ai-candidate-card img {
+    width: 100%;
+    border-radius: 6px;
+    display: block;
+}
+
+.candidate-info {
+    text-align: center;
+    margin-top: 10px;
+    font-size: 13px;
+    color: #666;
+}
+
+.candidate-info .score {
+    font-weight: bold;
+    color: #1a237e;
+}
+
+.candidate-info .score-sub {
+    font-size: 11px;
+    color: #888;
+}
+
+.btn-select {
+    width: 100%;
+    margin-top: 8px;
+    padding: 8px;
+    background: #1565C0;
+    color: white;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 13px;
+}
+
+.btn-select:hover {
+    background: #0D47A1;
+}
+
+.close-hint {
+    text-align: center;
+    color: #f57f17;
+    font-size: 13px;
+    margin-top: 12px;
+}
+
+/* ==================== 多视角 AI 图展示 ==================== */
+.multiview-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    gap: 16px;
+    margin-top: 12px;
+}
+
+.multiview-card {
+    background: #fafafa;
+    border: 1px solid #e0e0e0;
+    border-radius: 8px;
+    padding: 12px;
+}
+
+.multiview-card.fallback {
+    border-color: #f57f17;
+    background: #fff8e1;
+}
+
+.multiview-card .view-label {
+    font-size: 14px;
+    font-weight: bold;
+    color: #1a237e;
+    margin-bottom: 8px;
+}
+
+.multiview-card img {
+    width: 100%;
+    border-radius: 6px;
+    display: block;
+}
+
+.multiview-card .card-actions {
+    text-align: center;
+    margin-top: 8px;
+}
+
+.btn-download {
+    display: inline-block;
+    padding: 6px 16px;
+    background: #1565C0;
+    color: white;
+    border-radius: 4px;
+    text-decoration: none;
+    font-size: 13px;
+}
+
+.btn-download:hover {
+    background: #0D47A1;
+}
+
+/* 按钮样式补充 */
+.btn-warning {
+    background: #F57C00;
+    color: white;
+}
+
+.btn-warning:hover:not(:disabled) {
+    background: #E65100;
+}
+
+/* ==================== 高级参数面板 ==================== */
+.params-panel {
+    margin-top: 16px;
+    border: 1px solid #e0e0e0;
+    border-radius: 6px;
+    background: #fafafa;
+    overflow: hidden;
+}
+
+.params-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 10px 14px;
+    background: #f0f2f5;
+    cursor: pointer;
+    user-select: none;
+    transition: background 0.2s;
+}
+
+.params-header:hover {
+    background: #e8eaf6;
+}
+
+.params-title {
+    font-size: 14px;
+    font-weight: 600;
+    color: #333;
+}
+
+.params-toggle {
+    font-size: 12px;
+    color: #666;
+}
+
+.params-body {
+    padding: 12px 14px;
+    background: white;
+    border-top: 1px solid #e0e0e0;
+}
+
+.params-loading {
+    text-align: center;
+    color: #999;
+    padding: 20px;
+    font-size: 13px;
+}
+
+.param-item {
+    margin-bottom: 14px;
+}
+
+.param-label {
+    display: block;
+    font-size: 13px;
+    font-weight: 600;
+    color: #333;
+    margin-bottom: 6px;
+}
+
+.param-select {
+    width: 100%;
+    padding: 6px 8px;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+    font-size: 13px;
+    background: white;
+}
+
+.param-number-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.param-slider {
+    flex: 1;
+    cursor: pointer;
+}
+
+.param-input {
+    width: 80px;
+    padding: 4px 8px;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+    font-size: 13px;
+    text-align: center;
+}
+
+.param-auto-row {
+    margin-bottom: 6px;
+}
+
+.param-auto-label {
+    font-size: 12px;
+    color: #666;
+    cursor: pointer;
+    user-select: none;
+}
+
+.param-auto-label input {
+    margin-right: 4px;
+}
+
+.param-description {
+    font-size: 11px;
+    color: #999;
+    margin-top: 4px;
+    line-height: 1.4;
+}
+
+.params-apply-btn {
+    width: 100%;
+    margin-top: 8px;
+}
+
+.params-hint {
+    text-align: center;
+    font-size: 12px;
+    color: #666;
+    margin-top: 6px;
+    min-height: 18px;
+}

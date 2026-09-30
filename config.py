@@ -113,3 +113,109 @@ QWEN_API_URL = 'https://token-plan.cn-beijing.maas.aliyuncs.com/api/v1/services/
 
 # AI 生图使用的参考图：图1（立体主视图）+ 图3（南北向剖面）+ 图5（东西向剖面）
 AI_REFERENCE_IMGS = [1, 3, 5]
+
+# ==================== 缓存配置 ====================
+# 缓存有效期（小时）
+CACHE_TTL_HOURS = 24
+
+# 后台清理线程的扫描间隔（秒）
+CACHE_CLEANUP_INTERVAL = 3600
+
+# 缓存存储目录名（位于 outputs/ 下）
+CACHE_DIR_NAME = '_cache'
+
+# 是否启用缓存
+CACHE_ENABLED = True
+
+# ==================== AI 图评分配置 ====================
+# 评分权重
+SCORE_WEIGHT_SSIM = 0.6      # 结构相似度权重
+SCORE_WEIGHT_COLOR = 0.4     # 色调相似度权重
+
+# 分数差距阈值（低于此值视为"接近"，两张都保留并提示）
+SCORE_DIFF_THRESHOLD = 0.05
+
+# 推荐标记阈值（高于此值才标记为"推荐"）
+SCORE_RECOMMEND_THRESHOLD = 0.7
+
+# ==================== 多视角 AI 生成配置 ====================
+# 可选的生成数量
+MULTIVIEW_COUNT_OPTIONS = [1, 2, 3, 4]
+MULTIVIEW_DEFAULT_COUNT = 3
+
+# 用于多视角生成的 Python 参考图顺序（order 值）
+MULTIVIEW_VIEW_ORDERS = [1, 3, 5]   # 图1、图3、图5
+
+# ==================== 多视角纹理升级配置 ====================
+# 是否启用遮罩合成模式
+MULTIVIEW_USE_MASK_COMPOSITE = True
+
+# 是否启用色调统一后处理
+MULTIVIEW_UNIFY_COLOR = True
+
+# 色调统一方法：'reinhard' 或 'histogram'
+MULTIVIEW_COLOR_METHOD = 'reinhard'
+
+# 几何图黑色描边的线宽（像素）
+GEOMETRY_EDGE_WIDTH = 0.5
+
+# 遮罩合成时，几何图"非白像素"的阈值
+MASK_WHITE_THRESHOLD = 240
+
+# ==================== 建模参数前端可调配置 ====================
+# 允许用户在前端调整的参数清单
+USER_ADJUSTABLE_PARAMS = {
+    'RBF_FUNCTION': {
+        'label': '插值核函数',
+        'type': 'enum',
+        'options': ['linear', 'thin_plate', 'multiquadric', 'inverse', 'gaussian'],
+        'default': RBF_FUNCTION,
+        'description': '决定插值曲面的形态。linear 最稳健，thin_plate 最平滑'
+    },
+    'RBF_SMOOTH': {
+        'label': '插值平滑度',
+        'type': 'number',
+        'min': 0.001,
+        'max': 10.0,
+        'step': 0.001,
+        'default': RBF_SMOOTH,
+        'description': '值越小越精确穿过控制点，值越大越平滑'
+    },
+    'GRID_RESOLUTION': {
+        'label': '网格分辨率',
+        'type': 'number',
+        'min': 10,
+        'max': 100,
+        'step': 1,
+        'default': GRID_RESOLUTION,
+        'description': '网格越密模型越精细，但计算越慢'
+    },
+    'N_LAYERS': {
+        'label': '体渲染层数',
+        'type': 'number_or_auto',
+        'min': 5,
+        'max': 50,
+        'step': 1,
+        'default': N_LAYERS,
+        'description': '体渲染的层数。自动模式下根据岩性厚度计算'
+    },
+    'DRILL_STYLE': {
+        'label': '钻孔样式',
+        'type': 'enum',
+        'options': ['cylinder', 'line'],
+        'default': DRILL_STYLE,
+        'description': 'cylinder = 圆柱体，line = 线段'
+    },
+    'DRILL_RADIUS': {
+        'label': '钻孔半径（米）',
+        'type': 'number',
+        'min': 0.5,
+        'max': 20.0,
+        'step': 0.5,
+        'default': DRILL_RADIUS,
+        'description': '钻孔圆柱的半径。建议 1~5 米'
+    },
+}
+
+# 参数存储目录名（位于 uploads/{session_id}/ 下）
+SESSION_PARAMS_FILENAME = 'user_params.json'

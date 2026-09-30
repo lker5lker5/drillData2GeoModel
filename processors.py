@@ -360,11 +360,12 @@ def get_interpolated_coords(lengths, xs, ys, zs, target_lengths):
     return interp_x(target_lengths), interp_y(target_lengths), interp_z(target_lengths)
 
 
-def plot_drill_holes_on_ax(ax, loc_df, survey_df, litho_df, 
-                            legend_labels=None, show_labels=True, show_legend=True):
+def plot_drill_holes_on_ax(ax, loc_df, survey_df, litho_df,
+                            legend_labels=None, show_labels=True, show_legend=True,
+                            drill_style=None, drill_radius=None):
     """
     在给定的 3D 坐标轴上绘制所有钻孔轨迹和岩性段。
-    
+
     参数:
         ax: matplotlib 3D 坐标轴
         loc_df: 定位表 DataFrame
@@ -373,15 +374,25 @@ def plot_drill_holes_on_ax(ax, loc_df, survey_df, litho_df,
         legend_labels: 已存在的图例集合（set），用于去重。若为 None 则新建。
         show_labels: 是否显示钻孔编号
         show_legend: 是否显示图例（每个岩性只显示一次）
+        drill_style: 钻孔样式 ('cylinder'|'line')，None=使用config默认值
+        drill_radius: 钻孔半径（米），None=使用config默认值
     返回:
         legend_labels: 更新后的图例集合
     """
+    from config import (DRILL_STYLE as CFG_STYLE, DRILL_RADIUS as CFG_RADIUS,
+                        DRILL_FORCE_LINE_THRESHOLD, DRILL_DEGRADE_THRESHOLD)
+
+    if drill_style is None:
+        drill_style = CFG_STYLE
+    if drill_radius is None:
+        drill_radius = CFG_RADIUS
+
     if legend_labels is None:
         legend_labels = set()
-    
+
     total_segments = len(litho_df)
-    
-    if DRILL_STYLE == 'line' or total_segments > DRILL_FORCE_LINE_THRESHOLD:
+
+    if drill_style == 'line' or total_segments > DRILL_FORCE_LINE_THRESHOLD:
         use_style = 'line'
         if total_segments > DRILL_FORCE_LINE_THRESHOLD:
             print(f"==> 钻孔段数 {total_segments} 超过强制阈值 {DRILL_FORCE_LINE_THRESHOLD}，使用极简线段模式")
@@ -389,7 +400,7 @@ def plot_drill_holes_on_ax(ax, loc_df, survey_df, litho_df,
         use_style = 'line'
         print(f"==> 钻孔段数 {total_segments} 超过降级阈值 {DRILL_DEGRADE_THRESHOLD}，自动降级为线段模式")
     else:
-        use_style = DRILL_STYLE
+        use_style = drill_style
         print(f"==> 钻孔绘制模式: {use_style}（共 {total_segments} 段）")
 
     hole_ids = loc_df['钻孔编号'].unique()
@@ -434,10 +445,10 @@ def plot_drill_holes_on_ax(ax, loc_df, survey_df, litho_df,
             
             show_this_label = show_legend and (lith_name not in legend_labels)
         
-            # 根据 DRILL_STYLE 选择绘制方式
-            if DRILL_STYLE == 'cylinder':
+            # 根据 use_style 选择绘制方式
+            if use_style == 'cylinder':
                 plot_cylinder_segment(ax, x, y, z, color,
-                                    radius=DRILL_RADIUS,
+                                    radius=drill_radius,
                                     sides=DRILL_CYLINDER_SIDES)
                 # 图例通过一个代理线段实现
                 if show_this_label:
@@ -473,15 +484,18 @@ def add_view_order_watermark(fig, order, label=''):
         zorder=10000
     )
 
-def draw_single_model_view(volume_data, loc_df, survey_df, litho_df, 
-                            view_config, output_dir, base_name, labeled=True):
+def draw_single_model_view(volume_data, loc_df, survey_df, litho_df,
+                            view_config, output_dir, base_name, labeled=True,
+                            drill_style=None, drill_radius=None):
     """
     绘制单个视角的三维地质体模型图。
-    
+
     参数:
         volume_data: build_geological_bodies_with_volume_v2 返回的体数据
         view_config: {'name': ..., 'label': ..., 'elev': ..., 'azim': ...}
         labeled: True → 带钻孔、图例、完整坐标轴；False → 仅地质体+Z轴
+        drill_style: 钻孔样式，None=使用config默认值
+        drill_radius: 钻孔半径，None=使用config默认值
     返回:
         保存的图片路径
     """
@@ -510,7 +524,9 @@ def draw_single_model_view(volume_data, loc_df, survey_df, litho_df,
             ax, loc_df, survey_df, litho_df,
             legend_labels=set(),
             show_labels=True,
-            show_legend=True
+            show_legend=True,
+            drill_style=drill_style,
+            drill_radius=drill_radius
         )
         if legend_labels:
             ax.legend(loc='upper right', fontsize=8)
@@ -710,9 +726,32 @@ def generate_drill_views(loc_df, survey_df, litho_df, output_dir, base_name):
     return results
 
 # ==================== 交互式模型生成 ====================
-def generate_interactive_model(loc_df, survey_df, litho_df, output_dir, base_name):
-    """生成可交互式3D模型"""
-    bodies, volume_data = build_geological_bodies_with_volume_v2(loc_df, litho_df, survey_df, n_layers=N_LAYERS)
+def generate_interactive_model(loc_df, survey_df, litho_df, output_dir, base_name,
+                                drill_style=None, drill_radius=None,
+                                n_layers=None, rbf_function=None,
+                                rbf_smooth=None, grid_resolution=None):
+    """
+    生成可交互式3D模型。
+
+    参数:
+        drill_style / drill_radius: 钻孔样式参数，None=使用config默认值
+        n_layers / rbf_function / rbf_smooth / grid_resolution: 插值参数，None=使用config默认值
+    """
+    from config import (DRILL_STYLE as CFG_STYLE, DRILL_RADIUS as CFG_RADIUS,
+                        DRILL_FORCE_LINE_THRESHOLD, DRILL_DEGRADE_THRESHOLD)
+
+    if drill_style is None:
+        drill_style = CFG_STYLE
+    if drill_radius is None:
+        drill_radius = CFG_RADIUS
+
+    bodies, volume_data = build_geological_bodies_with_volume_v2(
+        loc_df, litho_df, survey_df,
+        n_layers=n_layers,
+        rbf_function=rbf_function,
+        rbf_smooth=rbf_smooth,
+        grid_resolution=grid_resolution
+    )
     
     if not volume_data:
         return None
@@ -734,15 +773,15 @@ def generate_interactive_model(loc_df, survey_df, litho_df, output_dir, base_nam
                 z_min_all = min(z_min_all, np.min(zs))
     
     total_segments = len(litho_df)
-    
-    if DRILL_STYLE == 'line' or total_segments > DRILL_FORCE_LINE_THRESHOLD:
+
+    if drill_style == 'line' or total_segments > DRILL_FORCE_LINE_THRESHOLD:
         use_style = 'line'
         print(f"==> Plotly: 使用线段模式（段数 {total_segments}）")
     elif total_segments > DRILL_DEGRADE_THRESHOLD:
         use_style = 'line'
         print(f"==> Plotly: 段数 {total_segments} 超降级阈值，使用线段模式")
     else:
-        use_style = DRILL_STYLE
+        use_style = drill_style
         print(f"==> Plotly: 使用 {use_style} 模式（段数 {total_segments}）")
 
     fig = go.Figure()
@@ -828,10 +867,10 @@ def generate_interactive_model(loc_df, survey_df, litho_df, output_dir, base_nam
             
             color_str = f'rgb({int(color[0]*255)}, {int(color[1]*255)}, {int(color[2]*255)})'
             
-            if DRILL_STYLE == 'cylinder':
+            if use_style == 'cylinder':
                 # 生成 Plotly 圆柱网格
                 cyl_x, cyl_y, cyl_z, cyl_i, cyl_j, cyl_k = build_plotly_cylinder_mesh(
-                    x, y, z, radius=DRILL_RADIUS, sides=DRILL_CYLINDER_SIDES
+                    x, y, z, radius=drill_radius, sides=DRILL_CYLINDER_SIDES
                 )
                 fig.add_trace(go.Mesh3d(
                     x=cyl_x, y=cyl_y, z=cyl_z,
@@ -1042,7 +1081,7 @@ def call_qwen_api_for_modeling(image_paths, color_map=None, api_key=QWEN_API_KEY
     # ========== 6. 发送请求 ==========
     print(f"==> 正在调用 {model} 生成地质模型...")
     try:
-        response = requests.post(api_url, headers=headers, json=payload, timeout=180)
+        response = requests.post(api_url, headers=headers, json=payload, timeout=360)
         print(f"==> 响应状态码: {response.status_code}")
 
         if response.status_code != 200:
@@ -1074,6 +1113,481 @@ def call_qwen_api_for_modeling(image_paths, color_map=None, api_key=QWEN_API_KEY
         return None, "!!! API请求超时（超过180秒）"
     except Exception as e:
         return None, f"!!! API调用异常: {str(e)}"
+
+
+def color_map_to_text(color_map):
+    """把 color_map dict 转为文本描述字符串"""
+    lines = []
+    for color, names in color_map.items():
+        lines.append(f'- {color}: {names}')
+    return '\n'.join(lines)
+
+
+def call_qwen_api_for_multiview(anchor_image, target_image, color_map,
+                                  api_key=None, api_url=None, model=None):
+    """
+    以最优 AI 图为主锚，生成目标视角的 AI 图。
+
+    参数:
+        anchor_image: 主锚图路径（最优 AI 图）
+        target_image: 目标视角的 Python 无标注图路径
+        color_map: 颜色映射 dict
+        api_key / api_url / model: 可选覆盖
+
+    返回:
+        (image_urls, error)
+    """
+    import base64
+    import requests
+    from config import QWEN_API_KEY, QWEN_API_URL, QWEN_MODEL
+
+    api_key = api_key or QWEN_API_KEY
+    api_url = api_url or QWEN_API_URL
+    model = model or QWEN_MODEL
+
+    if not api_key:
+        return None, "!!! API密钥未配置"
+
+    # 构建提示词
+    color_text = color_map_to_text(color_map)
+    prompt = f"""
+请生成一张三维地质体渲染图。
+
+【参考图说明】
+- 图1：已生成的高质量 AI 纹理图（主锚图）—— 参考它的岩石纹理、光影风格、色调。
+- 图2：目标视角的几何约束图 —— 参考它的几何结构、层位分布、视角。
+
+【任务】
+生成一张新图，满足：
+1. 几何结构：严格遵循图2的层位分布、层间厚度、视角
+2. 岩石纹理：参考图1的纹理风格，保持视觉一致
+3. 颜色规范：严格遵循下方的颜色-岩性对应
+4. 背景纯白，无文字标注
+5. 不同岩性应呈现符合地质学常识的岩石质感（透明矿物晶莹剔透、金属矿物金属光泽、结晶岩有结晶结构等）
+
+【颜色-岩性对应关系】
+{color_text}
+"""
+
+    # 构建 content
+    content_list = []
+    for img_path in [anchor_image, target_image]:
+        if not os.path.exists(img_path):
+            return None, f"!!! 图片不存在: {img_path}"
+        with open(img_path, 'rb') as f:
+            b64 = base64.b64encode(f.read()).decode('utf-8')
+            content_list.append({"image": f"data:image/png;base64,{b64}"})
+    content_list.append({"text": prompt})
+
+    payload = {
+        "model": model,
+        "input": {
+            "messages": [{"role": "user", "content": content_list}]
+        },
+        "parameters": {
+            "n": 1,
+            "size": "1024*1024",
+            "watermark": False,
+            "prompt_extend": True
+        }
+    }
+
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json"
+    }
+
+    try:
+        response = requests.post(api_url, headers=headers, json=payload, timeout=360)
+        if response.status_code != 200:
+            return None, f"!!! API调用失败 ({response.status_code}): {response.text}"
+
+        result = response.json()
+        output = result.get('output', {})
+        choices = output.get('choices', [])
+        if not choices:
+            return None, f"!!! API返回格式异常: {result}"
+
+        content = choices[0].get('message', {}).get('content', [])
+        image_urls = []
+        for item in content:
+            if isinstance(item, dict) and 'image' in item:
+                image_urls.append(item['image'])
+
+        if not image_urls:
+            return None, f"!!! 未找到图片: {result}"
+
+        return image_urls, None
+    except Exception as e:
+        return None, f"!!! API调用异常: {str(e)}"
+
+
+def add_annotations_to_ai_image(ai_image_path, output_path, z_min, z_max):
+    """
+    在 AI 图上叠加深度标尺（带标注版）。
+
+    参数:
+        ai_image_path: AI 生成图路径
+        output_path: 输出路径
+        z_min, z_max: 高程范围（米）
+    """
+    from PIL import Image, ImageDraw, ImageFont
+
+    try:
+        img = Image.open(ai_image_path).convert('RGB')
+    except Exception as e:
+        print(f"!!! 打开 AI 图失败: {e}")
+        return None
+
+    w, h = img.size
+
+    # 扩展画布（右侧留 120px 给标尺）
+    new_img = Image.new('RGB', (w + 120, h), 'white')
+    new_img.paste(img, (0, 0))
+
+    draw = ImageDraw.Draw(new_img)
+    ruler_x = w + 30
+    ruler_top = 80
+    ruler_bottom = h - 80
+    ruler_width = 20
+
+    # 灰度渐变条（浅→深）
+    for i in range(ruler_bottom - ruler_top):
+        gray = int(255 * (1 - i / (ruler_bottom - ruler_top)))
+        draw.rectangle(
+            [ruler_x, ruler_top + i, ruler_x + ruler_width, ruler_top + i + 1],
+            fill=(gray, gray, gray)
+        )
+
+    # 刻度
+    n_ticks = 6
+    for i in range(n_ticks + 1):
+        y = ruler_top + int((ruler_bottom - ruler_top) * i / n_ticks)
+        z_val = z_max - (z_max - z_min) * i / n_ticks
+        draw.line([ruler_x + ruler_width, y, ruler_x + ruler_width + 8, y],
+                  fill='black', width=2)
+        draw.text((ruler_x + ruler_width + 12, y - 8), f'{int(z_val)}m', fill='black')
+
+    # 标题
+    draw.text((ruler_x, ruler_top - 30), '深度标尺', fill='black')
+
+    new_img.save(output_path)
+    return output_path
+
+
+# ==================== 多视角纹理升级相关函数 ====================
+def plot_geometry_with_black_edges(volume_data, view_config, output_dir, base_name):
+    """
+    生成带黑色描边的几何图，用于 AI 纹理升级的输入。
+    黑色描边帮助 AI 识别层位边界。
+
+    参数:
+        volume_data: 地质体数据
+        view_config: 视角配置
+        output_dir: 输出目录
+        base_name: 文件名前缀
+
+    返回:
+        保存的图片路径
+    """
+    import matplotlib.pyplot as plt
+
+    fig = plt.figure(figsize=(FIGURE_WIDTH, FIGURE_HEIGHT))
+    ax = fig.add_subplot(111, projection='3d')
+
+    # 绘制地质体（带黑色描边）
+    for lith, data in volume_data.items():
+        color_rgb = data['color'][:3]
+        layers = data['layers']
+        if not layers:
+            continue
+        for k, Z in enumerate(layers):
+            opacity = 0.2 + 0.5 * (k / (len(layers) - 1)) if len(layers) > 1 else 0.5
+            ax.plot_surface(
+                data['X'], data['Y'], Z,
+                color=color_rgb,
+                alpha=opacity,
+                edgecolor='black',           # 关键：黑色描边
+                linewidth=GEOMETRY_EDGE_WIDTH
+            )
+
+    # 隐藏 X/Y 轴，保留 Z 轴
+    ax.set_xticks([])
+    ax.set_yticks([])
+    ax.set_xlabel('')
+    ax.set_ylabel('')
+    ax.tick_params(axis='x', which='both', length=0, labelbottom=False)
+    ax.tick_params(axis='y', which='both', length=0, labelleft=False)
+    ax.xaxis.line.set_visible(False)
+    ax.yaxis.line.set_visible(False)
+    ax.xaxis.pane.set_visible(False)
+    ax.yaxis.pane.set_visible(False)
+    ax.zaxis.pane.set_visible(False)
+    ax.set_zlabel('Elevation (m)', fontsize=10)
+    ax.tick_params(axis='z', labelsize=8)
+    ax.zaxis.line.set_visible(True)
+    ax.grid(False)
+
+    # 范围（从 volume_data 计算）
+    all_x, all_y, all_z = [], [], []
+    for data in volume_data.values():
+        all_x.extend(data['X'].ravel())
+        all_y.extend(data['Y'].ravel())
+        for layer in data['layers']:
+            valid = layer[~np.isnan(layer)]
+            all_z.extend(valid.tolist())
+
+    if all_x and all_y and all_z:
+        margin = 20
+        ax.set_xlim(min(all_x) - margin, max(all_x) + margin)
+        ax.set_ylim(min(all_y) - margin, max(all_y) + margin)
+        ax.set_zlim(min(all_z) - 10, max(all_z) + 10)
+
+    # 视角
+    ax.view_init(elev=view_config['elev'], azim=view_config['azim'])
+
+    # 保存
+    order = view_config.get('order', 0)
+    fname = f'{base_name}_geometry_{order:02d}_{view_config["name"]}.png'
+    save_path = os.path.join(output_dir, fname)
+    plt.savefig(save_path, dpi=FIGURE_DPI, pad_inches=0, facecolor='white')
+    plt.close()
+
+    return save_path
+
+
+def generate_ai_texture_for_single_view(geometry_path, color_map, api_key=None, api_url=None, model=None):
+    """
+    对单张几何图调用 AI 生成纹理图。
+
+    参数:
+        geometry_path: 带黑色描边的几何图路径
+        color_map: 颜色-岩性映射
+        api_key / api_url / model: 可选覆盖
+
+    返回:
+        (ai_image_url, error)
+    """
+    import base64
+    import requests
+    from config import QWEN_API_KEY, QWEN_API_URL, QWEN_MODEL
+
+    api_key = api_key or QWEN_API_KEY
+    api_url = api_url or QWEN_API_URL
+    model = model or QWEN_MODEL
+
+    if not api_key:
+        return None, "!!! API密钥未配置"
+
+    if not os.path.exists(geometry_path):
+        return None, f"!!! 几何图不存在: {geometry_path}"
+
+    # 构建颜色描述
+    color_lines = []
+    for color, names in color_map.items():
+        color_lines.append(f'- {color}: {names}')
+    color_text = '\n'.join(color_lines)
+
+    # 提示词：只升级纹理，不动几何
+    prompt = f"""
+请对参考图进行"纹理升级"——保持几何形态完全不变，只把彩色平面升级为真实的岩石纹理。
+
+【参考图说明】
+- 参考图是三维地质体的几何约束图，每一层用不同颜色表示，层位边界有黑色描边。
+- 你的任务是：保持每一层的位置、厚度、边界完全不变，只把"彩色平面"替换为"对应岩性的真实岩石纹理"。
+
+【岩性颜色对应关系】
+{color_text}
+
+【纹理升级要求】
+1. **几何严格保持不变**：每一层的位置、厚度、边界轮廓必须与参考图完全一致。
+2. **纹理逼真**：不同岩性应呈现符合地质学常识的岩石质感：
+   - 透明矿物（萤石、石英）：晶莹剔透、半透明、玻璃光泽
+   - 金属矿物（黄铜矿、黄铁矿、铅锌矿）：金属光泽、致密块状
+   - 结晶岩（花岗斑岩、片麻岩）：斑状结构或片理构造
+   - 沉积岩（砂岩、泥岩、砾岩）：颗粒感或层理清晰
+   - 覆盖层（第四系、浮土）：松散、土状、无明显结晶
+3. **颜色保持**：每一层的颜色基调与参考图一致，不要大幅偏移。
+4. **光影自然**：岩石表面的自然光照，避免过度反光或卡通化。
+5. **黑色描边保留**：参考图中的黑色层位边界必须保留，用于后续合成。
+6. **背景纯白**：背景必须为纯白色（255,255,255）。
+
+【重要提醒】
+这是"纹理升级"任务，不是"重新绘制"任务。几何、视角、层位、厚度必须严格保持。
+"""
+
+    # 读取图片
+    with open(geometry_path, 'rb') as f:
+        b64 = base64.b64encode(f.read()).decode('utf-8')
+    img_data = f"data:image/png;base64,{b64}"
+
+    payload = {
+        "model": model,
+        "input": {
+            "messages": [{
+                "role": "user",
+                "content": [
+                    {"image": img_data},
+                    {"text": prompt}
+                ]
+            }]
+        },
+        "parameters": {
+            "n": 1,
+            "size": "1024*1024",
+            "watermark": False,
+            "prompt_extend": True
+        }
+    }
+
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json"
+    }
+
+    try:
+        response = requests.post(api_url, headers=headers, json=payload, timeout=360)
+        if response.status_code != 200:
+            return None, f"!!! API调用失败 ({response.status_code}): {response.text}"
+
+        result = response.json()
+        output = result.get('output', {})
+        choices = output.get('choices', [])
+        if not choices:
+            return None, f"!!! API返回格式异常: {result}"
+
+        content = choices[0].get('message', {}).get('content', [])
+        for item in content:
+            if isinstance(item, dict) and 'image' in item:
+                return item['image'], None
+
+        return None, f"!!! 未找到图片: {result}"
+    except Exception as e:
+        return None, f"!!! API调用异常: {str(e)}"
+
+
+def composite_ai_texture_with_geometry(geo_path, ai_path, output_path):
+    """
+    遮罩合成：用几何图的轮廓作为遮罩，把 AI 纹理填充进去。
+
+    参数:
+        geo_path: Python 几何图路径（带黑色描边）
+        ai_path: AI 纹理图路径
+        output_path: 输出路径
+
+    返回:
+        输出路径
+    """
+    import numpy as np
+    from PIL import Image
+    from scipy.ndimage import binary_erosion
+    from config import MASK_WHITE_THRESHOLD
+
+    # 读取几何图
+    geo = np.array(Image.open(geo_path).convert('RGB'))
+    h, w = geo.shape[:2]
+
+    # 读取 AI 图，缩放到几何图尺寸
+    ai = np.array(Image.open(ai_path).convert('RGB').resize((w, h)))
+
+    # 几何图中非白像素 = 地质体区域
+    geo_mask = np.any(geo < MASK_WHITE_THRESHOLD, axis=2)
+
+    # 找出几何图的黑色描边（边缘）
+    eroded = binary_erosion(geo_mask, iterations=1)
+    edge_mask = geo_mask & ~eroded
+
+    # 结果：白底
+    result = np.full_like(geo, 255)
+
+    # 用 AI 纹理填充地质体区域
+    result[geo_mask] = ai[geo_mask]
+
+    # 保留几何图的黑色描边
+    result[edge_mask] = geo[edge_mask]
+
+    Image.fromarray(result).save(output_path)
+    return output_path
+
+
+def reinhard_color_transfer(source_img, target_img):
+    """
+    Reinhard 色彩迁移：把 target 的色调迁移到 source 的风格。
+
+    参数:
+        source_img: 参考图（numpy 数组，RGB）
+        target_img: 待迁移图（numpy 数组，RGB）
+
+    返回:
+        迁移后的图片（numpy 数组）
+    """
+    import numpy as np
+    from skimage import color
+
+    # 转到 Lab 色彩空间
+    src_lab = color.rgb2lab(source_img / 255.0)
+    tgt_lab = color.rgb2lab(target_img / 255.0)
+
+    # 计算均值和标准差
+    src_mean = src_lab.reshape(-1, 3).mean(axis=0)
+    src_std = src_lab.reshape(-1, 3).std(axis=0)
+    tgt_mean = tgt_lab.reshape(-1, 3).mean(axis=0)
+    tgt_std = tgt_lab.reshape(-1, 3).std(axis=0)
+
+    # 避免除零
+    tgt_std = np.where(tgt_std < 1e-6, 1e-6, tgt_std)
+
+    # 迁移
+    result_lab = (tgt_lab - tgt_mean) * (src_std / tgt_std) + src_mean
+    result_rgb = color.lab2rgb(result_lab) * 255
+    return result_rgb.astype(np.uint8)
+
+
+def unify_multiview_color_tones(image_paths):
+    """
+    统一多张图的色调，以第一张为参考。
+
+    参数:
+        image_paths: 图片路径列表（第一张作为参考）
+
+    返回:
+        修改后的图片路径列表
+    """
+    import numpy as np
+    from PIL import Image
+    from config import MULTIVIEW_COLOR_METHOD
+
+    if len(image_paths) < 2:
+        return image_paths
+
+    # 读取第一张作为参考
+    ref_img = np.array(Image.open(image_paths[0]).convert('RGB'))
+
+    result_paths = [image_paths[0]]  # 第一张不变
+
+    for i, path in enumerate(image_paths[1:], start=1):
+        tgt_img = np.array(Image.open(path).convert('RGB'))
+
+        # 尺寸对齐
+        if tgt_img.shape != ref_img.shape:
+            tgt_img = np.array(Image.open(path).convert('RGB').resize(
+                (ref_img.shape[1], ref_img.shape[0])
+            ))
+
+        # 应用色彩迁移
+        if MULTIVIEW_COLOR_METHOD == 'reinhard':
+            result_img = reinhard_color_transfer(ref_img, tgt_img)
+        else:
+            # 简单的直方图匹配（备选）
+            result_img = tgt_img  # 暂不实现
+
+        # 保存
+        out_path = path.replace('.png', '_unified.png')
+        Image.fromarray(result_img).save(out_path)
+        result_paths.append(out_path)
+
+    return result_paths
+
 
 # ==================== Excel模板生成 ====================
 def generate_template():
@@ -1140,8 +1654,31 @@ def generate_template():
     return template_path
 
 # ==================== 构建地质体（V2 - 优化版） ====================
-def build_geological_bodies_with_volume_v2(loc_df, litho_df, survey_df, n_layers=N_LAYERS):
-    """构建地质体模型（含多层体数据）—— 归一化坐标训练+预测，原始坐标输出"""
+def build_geological_bodies_with_volume_v2(loc_df, litho_df, survey_df,
+                                            n_layers=None,
+                                            rbf_function=None,
+                                            rbf_smooth=None,
+                                            grid_resolution=None):
+    """
+    构建地质体模型（含多层体数据）—— 归一化坐标训练+预测，原始坐标输出
+
+    参数:
+        n_layers: 体渲染层数，None=自动计算
+        rbf_function: RBF核函数，None=使用config默认值
+        rbf_smooth: RBF平滑度，None=使用config默认值
+        grid_resolution: 网格分辨率，None=使用config默认值
+    """
+    from config import (RBF_FUNCTION as CFG_RBF, RBF_SMOOTH as CFG_SMOOTH,
+                        GRID_RESOLUTION as CFG_GRID, N_LAYERS as CFG_NLAYERS)
+
+    if n_layers is None:
+        n_layers = CFG_NLAYERS  # 可能为None，后面会走自动计算
+    if rbf_function is None:
+        rbf_function = CFG_RBF
+    if rbf_smooth is None:
+        rbf_smooth = CFG_SMOOTH
+    if grid_resolution is None:
+        grid_resolution = CFG_GRID
     
     # ========== 1. 孔口坐标（X=N, Y=E 约定，与 plot_drill_holes_on_ax 一致）==========
     hole_coords = {}
@@ -1200,7 +1737,7 @@ def build_geological_bodies_with_volume_v2(loc_df, litho_df, survey_df, n_layers
         litho_groups[lith]['bottom'].append((x_bot_n, y_bot_n, z_bot))
     
     # ========== 5. 归一化插值网格 ==========
-    grid_res = GRID_RESOLUTION
+    grid_res = grid_resolution
     xi_n = np.linspace(0.0, scale, grid_res)
     yi_n = np.linspace(0.0, scale * (span_y / span_max), grid_res)
     xi_n, yi_n = np.meshgrid(xi_n, yi_n)
@@ -1260,9 +1797,9 @@ def build_geological_bodies_with_volume_v2(loc_df, litho_df, survey_df, n_layers
         # RBF 在归一化坐标上训练
         try:
             rbf_top = Rbf(top_pts[:, 0], top_pts[:, 1], top_pts[:, 2],
-                          function=RBF_FUNCTION, smooth=RBF_SMOOTH)
+                          function=rbf_function, smooth=rbf_smooth)
             rbf_bot = Rbf(bot_pts[:, 0], bot_pts[:, 1], bot_pts[:, 2],
-                          function=RBF_FUNCTION, smooth=RBF_SMOOTH)
+                          function=rbf_function, smooth=rbf_smooth)
         except Exception as e:
             print(f"!!! 岩性 {lith} 插值失败: {e}")
             continue

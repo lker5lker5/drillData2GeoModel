@@ -36,7 +36,11 @@ function setStatus(message, type = 'info') {
 
 function setButtonsEnabled(enabled) {
     const btns = [btnDrillViews, btnModelViews, btnAIModeling, btnInteractive];
-    btns.forEach(btn => btn.disabled = !enabled);
+    const btnMultiviewAI = document.getElementById('btnMultiviewAI');
+    if (btnMultiviewAI) btns.push(btnMultiviewAI);
+    btns.forEach(btn => {
+        if (btn) btn.disabled = !enabled;
+    });
 }
 
 function formatFileSize(bytes) {
@@ -280,7 +284,11 @@ btnModelViews.addEventListener('click', async () => {
             btnAIModeling.disabled = true;
         }
 
-        setStatus('==> 多视角建模示意图生成完成', 'success');
+        if (data.from_cache) {
+            setStatus('==> 使用缓存结果（来自上次计算）', 'success');
+        } else {
+            setStatus('==> 多视角建模示意图生成完成', 'success');
+        }
         if (timer) timer.stop();
 
     } catch (error) {
@@ -308,7 +316,8 @@ btnAIModeling.addEventListener('click', async () => {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 session_id: sessionId,
-                color_map: modelData.color_map
+                color_map: modelData.color_map,
+                file_path: filePath
             })
         });
         const data = await response.json();
@@ -320,13 +329,16 @@ btnAIModeling.addEventListener('click', async () => {
             return;
         }
 
-        let aiViews = data.image_urls.map((url, idx) => ({
-            url: url,
-            label: `AI建模图 ${idx+1}`
-        }));
-        renderCarousel(aiViews, 'AI 建模结果');
+        // 阶段 2：渲染候选图
+        renderAICandidates(data);
 
-        setStatus('==> AI建模完成，生成 ' + data.count + ' 张图', 'success');
+        if (data.is_close) {
+            setStatus('==> AI建模完成，两张候选评分接近，请人工对比选择', 'success');
+        } else if (data.from_cache) {
+            setStatus('==> 使用缓存结果（来自上次计算）', 'success');
+        } else {
+            setStatus('==> AI建模完成，推荐候选 ' + data.best_index, 'success');
+        }
         if (timer) timer.stop();
 
     } catch (error) {
@@ -335,6 +347,78 @@ btnAIModeling.addEventListener('click', async () => {
         if (timer) timer.stop();
     }
 });
+
+// ==================== AI 候选图展示 ====================
+function renderAICandidates(data) {
+    const resultsSection = document.getElementById('resultsSection');
+    resultsSection.innerHTML = '';
+    resultsSection.classList.add('visible');
+
+    let html = '<h2>AI 建模结果（候选图）</h2>';
+    html += '<div class="ai-candidates-grid">';
+
+    for (const c of data.candidates) {
+        const isBest = (c.index === data.best_index);
+        const scoreText = (c.scores && c.scores.total_score !== undefined)
+            ? '综合评分: ' + (c.scores.total_score * 100).toFixed(1)
+            : '';
+        const ssimText = (c.scores && c.scores.ssim !== undefined)
+            ? '几何相似度: ' + (c.scores.ssim * 100).toFixed(1)
+            : '';
+
+        html += `
+            <div class="ai-candidate-card ${isBest ? 'best' : ''}" data-index="${c.index}">
+                ${isBest ? '<div class="best-badge">✨ 推荐</div>' : ''}
+                <img src="${c.url}" alt="AI 候选 ${c.index}">
+                <div class="candidate-info">
+                    <div>候选 ${c.index}</div>
+                    <div class="score">${scoreText}</div>
+                    <div class="score-sub">${ssimText}</div>
+                </div>
+                <button class="btn-select" data-index="${c.index}">使用这张</button>
+            </div>
+        `;
+    }
+
+    html += '</div>';
+
+    if (data.is_close) {
+        html += '<p class="close-hint">💡 两张图评分接近，建议人工对比选择。</p>';
+    }
+
+    resultsSection.innerHTML = html;
+
+    // 绑定选择按钮
+    document.querySelectorAll('.btn-select').forEach(btn => {
+        btn.addEventListener('click', function() {
+            const selectedIndex = parseInt(this.dataset.index);
+            selectAICandidate(selectedIndex, data);
+        });
+    });
+}
+
+function selectAICandidate(index, data) {
+    // 保存用户选择到 modelData
+    if (!modelData.ai) modelData.ai = {};
+    modelData.ai.selected_index = index;
+
+    // 找到选中候选的路径
+    const selected = data.candidates.find(c => c.index === index);
+    if (selected) {
+        modelData.ai.best_image_path = selected.path;
+        modelData.ai.best_image_url = selected.url;
+    }
+
+    // 高亮选中的卡片
+    document.querySelectorAll('.ai-candidate-card').forEach(card => {
+        card.classList.remove('selected');
+        if (parseInt(card.dataset.index) === index) {
+            card.classList.add('selected');
+        }
+    });
+
+    setStatus('==> 已选择候选 ' + index, 'success');
+}
 
 // ==================== 交互式3D模型 ====================
 btnInteractive.addEventListener('click', async () => {
@@ -414,6 +498,93 @@ btnInteractive.addEventListener('click', async () => {
         if (timer) timer.stop();
     }
 });
+
+// ==================== 多视角 AI 生成 ====================
+const btnMultiviewAI = document.getElementById('btnMultiviewAI');
+if (btnMultiviewAI) {
+    btnMultiviewAI.addEventListener('click', async () => {
+        if (!sessionId) {
+            setStatus('!!! 请先上传文件', 'error');
+            return;
+        }
+
+        if (!modelData || !modelData.color_map || Object.keys(modelData.color_map).length === 0) {
+            setStatus('!!! 请先生成建模图', 'error');
+            return;
+        }
+
+        const viewCountStr = prompt('生成几张视角？（1~4）', '3');
+        if (!viewCountStr) return;
+
+        const count = parseInt(viewCountStr);
+        if (isNaN(count) || count < 1 || count > 4) {
+            setStatus('!!! 请输入 1~4 之间的数字', 'error');
+            return;
+        }
+
+        startLogPolling(sessionId);
+        setStatus('正在进行多视角纹理升级...', 'loading');
+        const timer = startButtonTimer(btnMultiviewAI, '纹理升级中');
+
+        try {
+            const response = await fetch('/api/multiview_texture_upgrade', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    session_id: sessionId,
+                    view_count: count,
+                    color_map: modelData.color_map,
+                    file_path: filePath
+                })
+            });
+            const data = await response.json();
+            stopLogPolling();
+
+            if (data.error) {
+                setStatus('!!! ' + data.error, 'error');
+                if (timer) timer.stop();
+                return;
+            }
+
+            renderMultiviewResults(data);
+            setStatus('==> 纹理升级完成（成功 ' + data.success_count + '/' + data.total_count + '）', 'success');
+            if (timer) timer.stop();
+
+        } catch (error) {
+            stopLogPolling();
+            setStatus('!!! 生成失败: ' + error.message, 'error');
+            if (timer) timer.stop();
+        }
+    });
+}
+
+function renderMultiviewResults(data) {
+    const resultsSection = document.getElementById('resultsSection');
+    resultsSection.innerHTML = '';
+    resultsSection.classList.add('visible');
+
+    let html = '<h2>多视角纹理升级结果（用于混元 3D）</h2>';
+    html += '<p style="color:#666;font-size:13px;margin-bottom:12px;">成功生成 ' + data.success_count + '/' + data.total_count + ' 张，几何形态与 Python 模型完全一致，可直接下载用于混元 3D 建模。</p>';
+
+    html += '<div class="multiview-grid">';
+    for (const img of data.images) {
+        html += `
+            <div class="multiview-card">
+                <div class="view-label">${img.view_label}</div>
+                <div style="position:relative;">
+                    <img src="${img.url}" alt="${img.view_label}">
+                    <button class="btn-zoom" onclick="openFullscreen('${img.url}')" title="放大查看">🔍</button>
+                </div>
+                <div class="card-actions">
+                    <a href="${img.url}" download class="btn-download">下载</a>
+                </div>
+            </div>
+        `;
+    }
+    html += '</div>';
+
+    resultsSection.innerHTML = html;
+}
 
 // ==================== 轮播及功能 ====================
 function renderCarousel(views, title) {
@@ -580,9 +751,237 @@ async function downloadAllAsZip(urls, zipName) {
 window.downloadCurrentView = downloadCurrentView;
 window.downloadAllViews = downloadAllViews;
 
+// ==================== 高级参数管理 ====================
+let currentParams = {};
+let currentParamsMeta = {};
+let savedParamsHash = '';
+
+// 加载参数元信息和当前值
+async function loadSessionParams() {
+    if (!sessionId) return;
+
+    try {
+        const response = await fetch(`/api/session_params?session_id=${sessionId}`);
+        const data = await response.json();
+
+        if (data.success) {
+            currentParamsMeta = data.meta || {};
+            savedParamsHash = data.params_hash || '';
+
+            // 先从 localStorage 读取（优先级更高）
+            const localSaved = localStorage.getItem(`params_${sessionId}`);
+            let params = data.params || {};
+
+            if (localSaved) {
+                try {
+                    const parsed = JSON.parse(localSaved);
+                    params = { ...params, ...parsed };
+                } catch (e) {}
+            }
+
+            currentParams = params;
+            renderParamsUI();
+        }
+    } catch (error) {
+        console.error('加载参数失败:', error);
+    }
+}
+
+// 渲染参数 UI
+function renderParamsUI() {
+    const container = document.getElementById('paramsContent');
+    const loading = document.getElementById('paramsLoading');
+    const applyBtn = document.getElementById('btnApplyParams');
+    if (!container || !loading) return;
+
+    loading.style.display = 'none';
+    container.style.display = 'block';
+    if (applyBtn) applyBtn.style.display = 'block';
+
+    let html = '';
+    for (const [key, meta] of Object.entries(currentParamsMeta)) {
+        const value = currentParams[key] !== undefined ? currentParams[key] : meta.default;
+        html += renderParamItem(key, meta, value);
+    }
+    container.innerHTML = html;
+
+    // 绑定事件
+    for (const key of Object.keys(currentParamsMeta)) {
+        const meta = currentParamsMeta[key];
+        if (meta.type === 'number') {
+            const slider = document.getElementById(`param_${key}_slider`);
+            const input = document.getElementById(`param_${key}_input`);
+            if (slider && input) {
+                slider.addEventListener('input', () => {
+                    input.value = slider.value;
+                });
+                input.addEventListener('input', () => {
+                    slider.value = input.value;
+                });
+            }
+        } else if (meta.type === 'number_or_auto') {
+            const slider = document.getElementById(`param_${key}_slider`);
+            const input = document.getElementById(`param_${key}_input`);
+            const autoCheck = document.getElementById(`param_${key}_auto`);
+            if (slider && input && autoCheck) {
+                autoCheck.addEventListener('change', () => {
+                    const isAuto = autoCheck.checked;
+                    slider.disabled = isAuto;
+                    input.disabled = isAuto;
+                });
+                // 初始化
+                if (value === null || value === undefined) {
+                    autoCheck.checked = true;
+                    slider.disabled = true;
+                    input.disabled = true;
+                }
+            }
+        }
+    }
+}
+
+// 渲染单个参数项
+function renderParamItem(key, meta, value) {
+    let html = `<div class="param-item">`;
+    html += `<label class="param-label" title="${meta.description || ''}">${meta.label}</label>`;
+
+    if (meta.type === 'enum') {
+        html += `<select id="param_${key}" class="param-select">`;
+        for (const opt of meta.options) {
+            const selected = (opt === value) ? 'selected' : '';
+            html += `<option value="${opt}" ${selected}>${opt}</option>`;
+        }
+        html += `</select>`;
+    } else if (meta.type === 'number') {
+        html += `<div class="param-number-row">`;
+        html += `<input type="range" id="param_${key}_slider"
+                 min="${meta.min}" max="${meta.max}" step="${meta.step}" value="${value}"
+                 class="param-slider">`;
+        html += `<input type="number" id="param_${key}_input"
+                 min="${meta.min}" max="${meta.max}" step="${meta.step}" value="${value}"
+                 class="param-input">`;
+        html += `</div>`;
+    } else if (meta.type === 'number_or_auto') {
+        html += `<div class="param-auto-row">`;
+        html += `<label class="param-auto-label"><input type="checkbox" id="param_${key}_auto"> 自动</label>`;
+        html += `</div>`;
+        html += `<div class="param-number-row">`;
+        html += `<input type="range" id="param_${key}_slider"
+                 min="${meta.min}" max="${meta.max}" step="${meta.step}" value="${value || meta.min}"
+                 class="param-slider">`;
+        html += `<input type="number" id="param_${key}_input"
+                 min="${meta.min}" max="${meta.max}" step="${meta.step}" value="${value || meta.min}"
+                 class="param-input">`;
+        html += `</div>`;
+    }
+
+    if (meta.description) {
+        html += `<div class="param-description">${meta.description}</div>`;
+    }
+
+    html += `</div>`;
+    return html;
+}
+
+// 收集用户当前调整的参数
+function collectParamsFromUI() {
+    const params = {};
+    for (const [key, meta] of Object.entries(currentParamsMeta)) {
+        if (meta.type === 'enum') {
+            const el = document.getElementById(`param_${key}`);
+            if (el) params[key] = el.value;
+        } else if (meta.type === 'number') {
+            const el = document.getElementById(`param_${key}_input`);
+            if (el) params[key] = parseFloat(el.value);
+        } else if (meta.type === 'number_or_auto') {
+            const autoCheck = document.getElementById(`param_${key}_auto`);
+            if (autoCheck && autoCheck.checked) {
+                params[key] = null;  // 自动模式
+            } else {
+                const el = document.getElementById(`param_${key}_input`);
+                if (el) params[key] = parseInt(el.value);
+            }
+        }
+    }
+    return params;
+}
+
+// 应用参数
+async function applyParams() {
+    if (!sessionId) {
+        setStatus('!!! 请先上传文件', 'error');
+        return;
+    }
+
+    const params = collectParamsFromUI();
+    const hint = document.getElementById('paramsHint');
+
+    try {
+        const response = await fetch('/api/save_params', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ session_id: sessionId, params: params })
+        });
+        const data = await response.json();
+
+        if (data.error) {
+            setStatus('!!! 参数保存失败: ' + data.error, 'error');
+            if (hint) hint.textContent = '保存失败: ' + data.error;
+            return;
+        }
+
+        currentParams = data.params;
+        savedParamsHash = data.params_hash;
+
+        // 保存到 localStorage
+        localStorage.setItem(`params_${sessionId}`, JSON.stringify(params));
+
+        setStatus('==> 参数已应用，下次生成时生效', 'success');
+        if (hint) {
+            hint.textContent = '参数已应用，下次生成时生效';
+            hint.style.color = '#2E7D32';
+        }
+
+        // 收起面板
+        setTimeout(() => {
+            document.getElementById('paramsBody').style.display = 'none';
+            document.getElementById('paramsToggle').textContent = '▶';
+        }, 800);
+
+    } catch (error) {
+        setStatus('!!! 参数保存失败: ' + error.message, 'error');
+    }
+}
+
+// 绑定折叠面板事件
+function initParamsPanel() {
+    const header = document.getElementById('paramsHeader');
+    const body = document.getElementById('paramsBody');
+    const toggle = document.getElementById('paramsToggle');
+    const applyBtn = document.getElementById('btnApplyParams');
+
+    if (!header || !body || !toggle) return;
+
+    header.addEventListener('click', () => {
+        const isHidden = body.style.display === 'none';
+        body.style.display = isHidden ? 'block' : 'none';
+        toggle.textContent = isHidden ? '▼' : '▶';
+
+        // 首次展开时加载参数
+        if (isHidden && Object.keys(currentParamsMeta).length === 0 && sessionId) {
+            loadSessionParams();
+        }
+    });
+
+    if (applyBtn) {
+        applyBtn.addEventListener('click', applyParams);
+    }
+}
+
 // ==================== 初始化 ====================
 document.addEventListener('DOMContentLoaded', function() {
     loadTemplateData();
+    initParamsPanel();
     setStatus('已加载模板数据，可查看下方预览', 'info');
 });
 
@@ -873,6 +1272,8 @@ async function handleFile(file) {
         fileSize.textContent = formatFileSize(file.size);
         await loadFileData(filePath);
         setButtonsEnabled(true);
+        // 加载该 session 的参数
+        await loadSessionParams();
         setStatus('==> 文件上传成功: ' + data.filename, 'success');
     } catch (error) {
         setStatus('!!! 上传失败: ' + error.message, 'error');
@@ -915,6 +1316,21 @@ removeFileBtn.addEventListener('click', () => {
         isTemplateData = true;
         modalTitle.textContent = '📊 数据预览（模板数据）';
     }
+
+    // 清除参数相关的状态
+    currentParams = {};
+    currentParamsMeta = {};
+    savedParamsHash = '';
+    const paramsContent = document.getElementById('paramsContent');
+    if (paramsContent) paramsContent.innerHTML = '';
+    const paramsLoading = document.getElementById('paramsLoading');
+    if (paramsLoading) {
+        paramsLoading.style.display = 'block';
+        paramsLoading.textContent = '请先上传文件，展开后加载参数...';
+    }
+    const applyBtn = document.getElementById('btnApplyParams');
+    if (applyBtn) applyBtn.style.display = 'none';
+
     setStatus('等待上传文件...', 'info');
 });
 

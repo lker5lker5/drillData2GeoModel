@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>地质体建模</title>
-    <link rel="stylesheet" href="/static/css/style.css">
+    <link rel="stylesheet" href="/static/css/style.css?v={{ static_ver }}">
     <script>
         // 从后端动态获取天地图密钥
         window.ZJ_TIANDITU_KEY = '{{ zj_key }}';
@@ -21,6 +21,8 @@
     {% endif %}
     <!-- Proj4js 用于坐标投影转换 -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/proj4js/2.9.2/proj4.js"></script>
+    <!-- Plotly 用于数据说明页面的图表 -->
+    <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
 </head>
 <body>
     <div class="app-container">
@@ -48,29 +50,58 @@
                         <button class="btn-remove" id="removeFile">×</button>
                     </div>
                     <div class="template-link">
-                        <a href="/api/template" download>📥 下载模板</a>
-                        <button class="btn-preview" id="btnPreviewData">📊 预览数据</button>
+                        <div class="template-row">
+                            <a href="/api/template" download>📥 下载模板</a>
+                            <button class="btn-preview" id="btnPreviewData">📊 预览数据</button>
+                        </div>
+                        <div class="template-row">
+                            <button class="btn-preview" id="btnAnalyzeRBF">🔬 RBF 参数分析</button>
+                            <button class="btn-preview" id="btnNewSession">🔄 新建会话</button>
+                        </div>
                     </div>
                 </div>
 
                 <!-- 操作按钮 -->
                 <div class="action-group">
-                    <button class="btn btn-primary" id="btnDrillViews" disabled>
-                        <span class="icon">🔬</span> 钻孔示意图
-                    </button>
-                    <button class="btn btn-primary" id="btnModelViews" disabled>
-                        <span class="icon">🏔️</span> 建模示意图
-                    </button>
-                    <button class="btn btn-success" id="btnAIModeling" disabled>
-                        <span class="icon">🤖</span> AI 建模
-                    </button>
-                    <button class="btn btn-info" id="btnInteractive" disabled>
-                        <span class="icon">🌐</span> 交互式3D模型
-                    </button>
-                    <button class="btn btn-warning" id="btnMultiviewAI" disabled>
-                        <span class="icon">🎨</span> 多视角纹理升级
-                    </button>
+                    <!-- 可视化建模 -->
+                    <div class="sidebar-group">
+                        <div class="sidebar-group-title">可视化建模</div>
+                        <div class="sidebar-row">
+                            <button class="btn btn-sidebar" id="btnDrillViews" disabled>
+                                <span class="icon">🔬</span> 钻孔示意图
+                            </button>
+                            <button class="btn btn-sidebar" id="btnModelViews" disabled>
+                                <span class="icon">🏔️</span> 建模示意图
+                            </button>
+                        </div>
+                        <button class="btn btn-sidebar btn-sidebar-full" id="btnInteractive" disabled>
+                            <span class="icon">🌐</span> 交互式3D模型
+                        </button>
+                        <div class="sidebar-row">
+                            <button class="btn btn-sidebar" id="btnAIModeling" disabled>
+                                <span class="icon">🤖</span> AI 建模
+                            </button>
+                            <button class="btn btn-sidebar" id="btnMultiviewAI" disabled>
+                                <span class="icon">🎨</span> 多视角纹理升级
+                            </button>
+                        </div>
+                        <div id="visTimer" class="btn-timer-container"></div>
                     </div>
+
+                    <!-- 插值分析 -->
+                    <div class="sidebar-group">
+                        <div class="sidebar-group-title">插值分析</div>
+                        <div class="sidebar-row">
+                            <button class="btn btn-sidebar" id="btnKriging" disabled>
+                                <span class="icon">📊</span> 克里金分析
+                            </button>
+                            <button class="btn btn-sidebar" id="btnKrigingAnalysis" disabled>
+                                <span class="icon">📊</span> 插值数值分析
+                            </button>
+                        </div>
+                        <div id="interpTimer" class="btn-timer-container"></div>
+                    </div>
+                </div>
 
                 <!-- ==================== 高级参数面板 ==================== -->
                 <div class="params-panel" id="paramsPanel">
@@ -100,16 +131,27 @@
 
             <!-- 右侧/主体：结果显示区 -->
             <div class="result-panel">
+                <div class="result-tabs" id="resultTabs" style="display:none;">
+                    <button class="result-tab active" data-tab="visual" id="tabVisual">
+                        📊 可视化结果
+                    </button>
+                    <button class="result-tab" data-tab="report" id="tabReport">
+                        📈 数据说明
+                    </button>
+                </div>
                 <div class="results-section" id="resultsSection">
                     <!-- 钻孔角度示意模型（默认显示） -->
                     <div id="drillModelContainer" style="flex:1; width:100%; min-height:0; border-radius:8px; overflow:hidden; background:#f0f0f0;">
-                        <iframe src="/static/drillAngleExplain.HTML" 
+                        <iframe src="/static/drillAngleExplain.HTML"
                                 style="width:100%;height:100%;border:none;"
                                 allowfullscreen>
                         </iframe>
                     </div>
                     <!-- 其他结果将追加到此（如轮播图等） -->
                     <div id="resultsContent"></div>
+                </div>
+                <div class="report-section" id="reportSection" style="display:none;">
+                    <!-- 数据说明由 JS 动态渲染 -->
                 </div>
             </div>
         </div>
@@ -180,6 +222,34 @@
         </div>
     </div>
 
+    <!-- ==================== 交互式3D弹窗 ==================== -->
+    <div class="interactive-overlay" id="interactiveModal">
+        <div class="interactive-container">
+            <button class="interactive-close" id="interactiveClose">&times;</button>
+            <div class="interactive-content" id="interactiveContent">
+                <!-- 由 JS 动态填充双窗3D iframe -->
+            </div>
+        </div>
+    </div>
+
+    <!-- ==================== 图层选择弹窗（RBF参数分析用） ==================== -->
+    <div class="modal-overlay" id="layerSelectModal" style="display:none;">
+        <div class="modal-container" style="max-width:420px;">
+            <div class="modal-header">
+                <h2>🔬 选择分析范围</h2>
+                <button class="modal-close" id="layerSelectClose">&times;</button>
+            </div>
+            <div class="modal-body">
+                <p style="margin-bottom:12px;color:#555;font-size:14px;">请选择要分析的岩性层：</p>
+                <div id="layerSelectOptions" style="max-height:300px;overflow-y:auto;"></div>
+            </div>
+            <div class="modal-footer" style="justify-content:flex-end;gap:8px;">
+                <button class="btn-close" id="layerSelectCancel">取消</button>
+                <button class="btn btn-primary" id="layerSelectConfirm" style="padding:6px 20px;">开始分析</button>
+            </div>
+        </div>
+    </div>
+
     <!-- 配置 -->
     <script>
         const ZJ_TIANDITU_KEY = '{{ zj_key }}';
@@ -187,6 +257,6 @@
         window.ZJ_TIANDITU_KEY = ZJ_TIANDITU_KEY;
         window.ZJ_TIANDITU_HOST = ZJ_TIANDITU_HOST;
     </script>
-    <script src="/static/js/main.js"></script>
+    <script src="/static/js/main.js?v={{ static_ver }}"></script>
 </body>
 </html>

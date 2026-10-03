@@ -101,6 +101,9 @@ DRILL_FORCE_LINE_THRESHOLD = 5000
 # 降级模式下的线段宽度
 DRILL_LINE_WIDTH = 6
 
+# Session 超时配置（分钟）
+SESSION_TIMEOUT_MINUTES = 60
+
 # 服务器配置
 HOST = '0.0.0.0'
 PORT = 5001
@@ -162,12 +165,19 @@ GEOMETRY_EDGE_WIDTH = 0.5
 # 遮罩合成时，几何图"非白像素"的阈值
 MASK_WHITE_THRESHOLD = 240
 
+# ==================== 克里金插值配置 ====================
+# 默认变异函数模型
+KRIGING_VARIOGRAM_MODEL = 'spherical'
+# 允许前端选择的变异函数模型
+KRIGING_VARIOGRAM_OPTIONS = ['spherical', 'exponential', 'gaussian', 'linear', 'power']
+
 # ==================== 建模参数前端可调配置 ====================
 # 允许用户在前端调整的参数清单
 USER_ADJUSTABLE_PARAMS = {
     'RBF_FUNCTION': {
         'label': '插值核函数',
         'type': 'enum',
+        'group': 'RBF 插值参数',
         'options': ['linear', 'thin_plate', 'multiquadric', 'inverse', 'gaussian'],
         'default': RBF_FUNCTION,
         'description': '决定插值曲面的形态。linear 最稳健，thin_plate 最平滑'
@@ -175,15 +185,25 @@ USER_ADJUSTABLE_PARAMS = {
     'RBF_SMOOTH': {
         'label': '插值平滑度',
         'type': 'number',
+        'group': 'RBF 插值参数',
         'min': 0.001,
         'max': 10.0,
         'step': 0.001,
         'default': RBF_SMOOTH,
         'description': '值越小越精确穿过控制点，值越大越平滑'
     },
+    'KRIGING_VARIOGRAM': {
+        'label': '克里金变异函数',
+        'type': 'enum',
+        'group': '克里金参数',
+        'options': KRIGING_VARIOGRAM_OPTIONS,
+        'default': KRIGING_VARIOGRAM_MODEL,
+        'description': '克里金插值的变异函数模型。spherical 最常用，gaussian 更平滑'
+    },
     'GRID_RESOLUTION': {
         'label': '网格分辨率',
         'type': 'number',
+        'group': '建模参数',
         'min': 10,
         'max': 100,
         'step': 1,
@@ -193,6 +213,7 @@ USER_ADJUSTABLE_PARAMS = {
     'N_LAYERS': {
         'label': '体渲染层数',
         'type': 'number_or_auto',
+        'group': '建模参数',
         'min': 5,
         'max': 50,
         'step': 1,
@@ -202,6 +223,7 @@ USER_ADJUSTABLE_PARAMS = {
     'DRILL_STYLE': {
         'label': '钻孔样式',
         'type': 'enum',
+        'group': '钻孔显示参数',
         'options': ['cylinder', 'line'],
         'default': DRILL_STYLE,
         'description': 'cylinder = 圆柱体，line = 线段'
@@ -209,6 +231,7 @@ USER_ADJUSTABLE_PARAMS = {
     'DRILL_RADIUS': {
         'label': '钻孔半径（米）',
         'type': 'number',
+        'group': '钻孔显示参数',
         'min': 0.5,
         'max': 20.0,
         'step': 0.5,
@@ -219,3 +242,58 @@ USER_ADJUSTABLE_PARAMS = {
 
 # 参数存储目录名（位于 uploads/{session_id}/ 下）
 SESSION_PARAMS_FILENAME = 'user_params.json'
+
+# ==================== 克里金分析配置（曲面分析） ====================
+# 默认变异函数模型
+KRIGING_DEFAULT_VARIOGRAM = 'spherical'
+
+# 网格分辨率（None 表示从 GRID_RESOLUTION 读取）
+KRIGING_GRID_RES = None
+
+# 控制点数量低于此值时给出警告
+KRIGING_MIN_POINTS_WARN = 10
+
+# 热力图配色
+KRIGING_VALUE_CMAP = 'viridis'
+KRIGING_VARIANCE_CMAP = 'hot_r'
+
+# 缓存类型标识
+KRIGING_SURFACE_CACHE_TYPE = 'kriging_surface'
+
+# ==================== 数据说明页面配置 ====================
+ENABLE_DATA_REPORT = True
+ANALYSIS_CACHE_TYPE = 'analysis'
+REPORT_SCATTER_COLOR = '#1565C0'
+REPORT_HISTOGRAM_COLOR = '#2E7D32'
+REPORT_DIFF_COLOR = '#F57C00'
+REPORT_SCATTER_MAX_POINTS = 500
+
+# ==================== RBF 参数分析配置 ====================
+# 是否启用 RBF 参数分析功能
+ENABLE_RBF_ANALYSIS = True
+
+# 候选核函数列表
+RBF_OPTIMIZE_FUNCTIONS = [
+    'multiquadric',
+    'thin_plate',
+    'linear',
+    'inverse_multiquadric',
+    'gaussian'
+]
+
+# 候选 smooth 值
+RBF_OPTIMIZE_SMOOTHS = [0, 0.0001, 0.001, 0.01, 0.05, 0.1, 0.5, 1.0]
+
+# 候选 epsilon 值（仅 gaussian 使用）
+RBF_OPTIMIZE_EPSILONS = [0.1, 0.5, 1.0, 2.0]
+
+# 参数分析缓存类型
+RBF_ANALYSIS_CACHE_TYPE = 'rbf_analysis'
+
+# RMSE 参考标准
+RBF_RMSE_STANDARDS = [
+    {'max': 5,   'label': '优秀', 'suggestion': '直接采用',           'color': '#2E7D32'},
+    {'max': 15,  'label': '良好', 'suggestion': '可用于宏观展示',     'color': '#1565C0'},
+    {'max': 30,  'label': '一般', 'suggestion': '需检查数据质量',     'color': '#F57C00'},
+    {'max': 99999, 'label': '差', 'suggestion': '数据可能有问题，或控制点分布太稀疏', 'color': '#C62828'},
+]

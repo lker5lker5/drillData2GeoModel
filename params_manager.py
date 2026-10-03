@@ -137,6 +137,7 @@ def get_frontend_meta():
         meta[key] = {
             'label': info['label'],
             'type': info['type'],
+            'group': info.get('group', ''),
             'default': info['default'],
             'description': info.get('description', '')
         }

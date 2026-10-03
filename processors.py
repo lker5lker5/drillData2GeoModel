@@ -725,7 +725,148 @@ def generate_drill_views(loc_df, survey_df, litho_df, output_dir, base_name):
     
     return results
 
-# ==================== 交互式模型生成 ====================
+# ==================== 交互式模型生成（钻孔专用） ====================
+def generate_drill_model_only(loc_df, survey_df, litho_df, output_dir, base_name,
+                               drill_style=None, drill_radius=None):
+    """
+    生成仅展示钻孔轨迹（不含地质体）的交互式3D模型。
+    参数含义同 generate_interactive_model。
+    """
+    from config import (DRILL_STYLE as CFG_STYLE, DRILL_RADIUS as CFG_RADIUS,
+                        DRILL_FORCE_LINE_THRESHOLD, DRILL_DEGRADE_THRESHOLD)
+
+    if drill_style is None:
+        drill_style = CFG_STYLE
+    if drill_radius is None:
+        drill_radius = CFG_RADIUS
+
+    hole_ids = loc_df['钻孔编号'].unique()
+
+    all_n = loc_df['开孔坐标N'].values
+    all_e = loc_df['开孔坐标E'].values
+    all_z = loc_df['开孔高程R'].values
+    z_min_all = min(all_z)
+
+    for hid in hole_ids:
+        surv = survey_df[survey_df['钻孔编号'] == hid]
+        if len(surv) > 0:
+            _, _, _, zs = compute_trajectory(surv)
+            row = loc_df[loc_df['钻孔编号'] == hid].iloc[0]
+            zs += row['开孔高程R']
+            if len(zs) > 0:
+                z_min_all = min(z_min_all, np.min(zs))
+
+    total_segments = len(litho_df)
+
+    if drill_style == 'line' or total_segments > DRILL_FORCE_LINE_THRESHOLD:
+        use_style = 'line'
+        print(f"==> Plotly(钻孔专用): 使用线段模式（段数 {total_segments}）")
+    elif total_segments > DRILL_DEGRADE_THRESHOLD:
+        use_style = 'line'
+        print(f"==> Plotly(钻孔专用): 段数 {total_segments} 超降级阈值，使用线段模式")
+    else:
+        use_style = drill_style
+        print(f"==> Plotly(钻孔专用): 使用 {use_style} 模式（段数 {total_segments}）")
+
+    fig = go.Figure()
+
+    # ==== 仅绘制钻孔（无地质体）====
+    for hid in hole_ids:
+        row = loc_df[loc_df['钻孔编号'] == hid].iloc[0]
+        x0 = row['开孔坐标N']
+        y0 = row['开孔坐标E']
+        z0 = row['开孔高程R']
+
+        surv = survey_df[survey_df['钻孔编号'] == hid]
+        if len(surv) == 0:
+            continue
+
+        lengths, xs, ys, zs = compute_trajectory(surv)
+        xs += x0
+        ys += y0
+        zs += z0
+
+        fig.add_trace(go.Scatter3d(
+            x=xs, y=ys, z=zs,
+            mode='lines',
+            line=dict(color='gray', width=1, dash='dash'),
+            showlegend=False,
+            hoverinfo='skip'
+        ))
+
+        litho = litho_df[litho_df['钻孔编号'] == hid].sort_values(
+            '上层位长度起始刻度', ascending=True)
+
+        for _, seg in litho.iterrows():
+            d_top = seg['上层位长度起始刻度']
+            d_bot = seg['下层位长度起始刻度']
+            lith_name = seg['岩性描述']
+            color = parse_color(seg['建模颜色'], lith_name)
+
+            if d_top < lengths[0]:
+                d_top = lengths[0]
+            if d_bot > lengths[-1]:
+                d_bot = lengths[-1]
+            if d_top >= d_bot:
+                continue
+
+            d_sample = np.linspace(d_top, d_bot, max(3, int((d_bot - d_top) / 0.5)))
+            x, y, z = get_interpolated_coords(lengths, xs, ys, zs, d_sample)
+            if len(x) == 0:
+                continue
+
+            color_str = f'rgb({int(color[0]*255)}, {int(color[1]*255)}, {int(color[2]*255)})'
+
+            if use_style == 'cylinder':
+                cyl_x, cyl_y, cyl_z, cyl_i, cyl_j, cyl_k = build_plotly_cylinder_mesh(
+                    x, y, z, radius=drill_radius, sides=DRILL_CYLINDER_SIDES
+                )
+                fig.add_trace(go.Mesh3d(
+                    x=cyl_x, y=cyl_y, z=cyl_z,
+                    i=cyl_i, j=cyl_j, k=cyl_k,
+                    color=color_str,
+                    opacity=0.9,
+                    showlegend=False,
+                    hovertemplate=f'钻孔: {hid}<br>岩性: {lith_name}<extra></extra>'
+                ))
+            else:
+                fig.add_trace(go.Scatter3d(
+                    x=x, y=y, z=z,
+                    mode='lines',
+                    line=dict(color=color_str, width=5),
+                    showlegend=False,
+                    hovertemplate=f'钻孔: {hid}<br>岩性: {lith_name}<br>高程: %{{z:.1f}}m<extra></extra>'
+                ))
+
+        fig.add_trace(go.Scatter3d(
+            x=[x0], y=[y0], z=[z0 + 3],
+            mode='text',
+            text=[hid],
+            textfont=dict(size=12, color='black', family='Arial Black'),
+            showlegend=False,
+            hoverinfo='skip'
+        ))
+
+    margin = 20
+    fig.update_layout(
+        scene=dict(
+            xaxis=dict(title='开孔坐标N (m)', range=[all_n.min() - margin, all_n.max() + margin]),
+            yaxis=dict(title='开孔坐标E (m)', range=[all_e.min() - margin, all_e.max() + margin]),
+            zaxis=dict(title='海拔高度 (m)', range=[z_min_all - 10, all_z.max() + 5]),
+            camera=dict(eye=dict(x=1.5, y=1.5, z=1.0))
+        ),
+        width=1200,
+        height=800,
+        title='交互式钻孔模型',
+        margin=dict(l=10, r=10, t=40, b=10)
+    )
+
+    html_path = os.path.join(output_dir, f'{base_name}.html')
+    fig.write_html(html_path)
+    return html_path
+
+
+# ==================== 交互式模型生成（已有，不修改） ====================
 def generate_interactive_model(loc_df, survey_df, litho_df, output_dir, base_name,
                                 drill_style=None, drill_radius=None,
                                 n_layers=None, rbf_function=None,
@@ -1658,7 +1799,8 @@ def build_geological_bodies_with_volume_v2(loc_df, litho_df, survey_df,
                                             n_layers=None,
                                             rbf_function=None,
                                             rbf_smooth=None,
-                                            grid_resolution=None):
+                                            grid_resolution=None,
+                                            session_id=None):
     """
     构建地质体模型（含多层体数据）—— 归一化坐标训练+预测，原始坐标输出
 
@@ -1846,8 +1988,744 @@ def build_geological_bodies_with_volume_v2(loc_df, litho_df, survey_df,
         
         valid_count = int(np.sum(~np.isnan(Z_top_c)))
         print(f"==> 岩性 {lith} 插值成功，有效网格点: {valid_count}")
-    
+
+    # ========== 记录 RBF 分析数据 ==========
+    try:
+        if session_id:
+            from analysis_manager import record_rbf_data, _numpy_to_list
+            from config import RBF_FUNCTION, RBF_SMOOTH, GRID_RESOLUTION
+
+            layers_info = []
+            for lith, data in litho_groups.items():
+                if len(data['top']) < 3 or lith not in bodies:
+                    continue
+
+                body = bodies[lith]
+                grid_x = body['X'][0, :].tolist()
+                grid_y = body['Y'][:, 0].tolist()
+
+                # 顶面
+                top_pts = data['top']
+                z_top_valid = body['Z_top'][~np.isnan(body['Z_top'])]
+                layers_info.append({
+                    'layer_name': lith,
+                    'part_name': '顶面',
+                    'control_points': [(float(p[0]), float(p[1]), float(p[2])) for p in top_pts],
+                    'grid_x': grid_x,
+                    'grid_y': grid_y,
+                    'z_pred': _numpy_to_list(body['Z_top']),
+                    'stats': {
+                        'n_points': len(top_pts),
+                        'min': float(np.min(z_top_valid)) if len(z_top_valid) > 0 else None,
+                        'max': float(np.max(z_top_valid)) if len(z_top_valid) > 0 else None,
+                        'mean': float(np.mean(z_top_valid)) if len(z_top_valid) > 0 else None,
+                        'std': float(np.std(z_top_valid)) if len(z_top_valid) > 0 else None
+                    }
+                })
+
+                # 底面
+                bot_pts = data['bottom']
+                z_bot_valid = body['Z_bot'][~np.isnan(body['Z_bot'])]
+                layers_info.append({
+                    'layer_name': lith,
+                    'part_name': '底面',
+                    'control_points': [(float(p[0]), float(p[1]), float(p[2])) for p in bot_pts],
+                    'grid_x': grid_x,
+                    'grid_y': grid_y,
+                    'z_pred': _numpy_to_list(body['Z_bot']),
+                    'stats': {
+                        'n_points': len(bot_pts),
+                        'min': float(np.min(z_bot_valid)) if len(z_bot_valid) > 0 else None,
+                        'max': float(np.max(z_bot_valid)) if len(z_bot_valid) > 0 else None,
+                        'mean': float(np.mean(z_bot_valid)) if len(z_bot_valid) > 0 else None,
+                        'std': float(np.std(z_bot_valid)) if len(z_bot_valid) > 0 else None
+                    }
+                })
+
+            rbf_params = {
+                'rbf_function': rbf_function or RBF_FUNCTION,
+                'rbf_smooth': rbf_smooth if rbf_smooth is not None else RBF_SMOOTH,
+                'grid_resolution': grid_resolution or GRID_RESOLUTION,
+                'n_layers': n_layers if n_layers else 'auto'
+            }
+            record_rbf_data(session_id, rbf_params, layers_info)
+    except Exception as e:
+        print(f"!!! 记录 RBF 分析数据失败: {e}")
+    # =====================================
+
     return bodies, volume_data
+
+
+# ==================== 克里金插值分析 ====================
+def perform_kriging_analysis(loc_df, litho_df, survey_df,
+                              n_layers=None,
+                              rbf_function=None,
+                              rbf_smooth=None,
+                              grid_resolution=None,
+                              variogram_model=None,
+                              output_dir=None,
+                              base_name=None):
+    """
+    执行克里金插值分析，生成与 RBF 对比的 2x2 并排图。
+
+    参数:
+        loc_df: 定位表 DataFrame
+        litho_df: 岩性表 DataFrame
+        survey_df: 测斜表 DataFrame
+        n_layers: 体渲染层数，None=自动计算
+        rbf_function/rbf_smooth: RBF 参数（用于生成对比的 RBF 图）
+        grid_resolution: 网格分辨率
+        variogram_model: 克里金变异函数模型
+
+    返回:
+        dict: {
+            'comparison_path': 并排图路径,
+            'rbf_path': RBF 单独图路径,
+            'kriging_path': 克里金单独图路径,
+            'variance_path': 方差图路径,
+            'analysis_text': 分析结论文本,
+            'layer_count': 分析的岩性层数,
+            'point_counts': 各层控制点数量
+        }
+    """
+    from config import (RBF_FUNCTION as CFG_RBF, RBF_SMOOTH as CFG_SMOOTH,
+                        GRID_RESOLUTION as CFG_GRID, N_LAYERS as CFG_NLAYERS,
+                        KRIGING_VARIOGRAM_MODEL as CFG_VARIOGRAM,
+                        FIGURE_DPI, FIGURE_WIDTH, FIGURE_HEIGHT)
+    from pykrige.ok import OrdinaryKriging
+
+    if n_layers is None:
+        n_layers = CFG_NLAYERS
+    if rbf_function is None:
+        rbf_function = CFG_RBF
+    if rbf_smooth is None:
+        rbf_smooth = CFG_SMOOTH
+    if grid_resolution is None:
+        grid_resolution = CFG_GRID
+    if variogram_model is None:
+        variogram_model = CFG_VARIOGRAM
+    if output_dir is None:
+        output_dir = OUTPUT_FOLDER
+    if base_name is None:
+        from datetime import datetime
+        base_name = f'kriging_{datetime.now().strftime("%y%m%d%H%M")}'
+
+    os.makedirs(output_dir, exist_ok=True)
+
+    # ========== 1. 孔口坐标 & 轨迹缓存 ==========
+    hole_coords = {}
+    for _, row in loc_df.iterrows():
+        hid = row['钻孔编号']
+        hole_coords[hid] = (row['开孔坐标N'], row['开孔坐标E'], row['开孔高程R'])
+
+    traj_cache = {}
+    for hid in loc_df['钻孔编号']:
+        surv = survey_df[survey_df['钻孔编号'] == hid]
+        if len(surv) > 0:
+            lengths, xs, ys, zs = compute_trajectory(surv)
+            traj_cache[hid] = {'lengths': lengths, 'xs': xs, 'ys': ys, 'zs': zs}
+
+    # ========== 2. 坐标归一化参数（与 RBF 保持一致） ==========
+    base_x = loc_df['开孔坐标N'].min()
+    base_y = loc_df['开孔坐标E'].min()
+    span_x = loc_df['开孔坐标N'].max() - base_x
+    span_y = loc_df['开孔坐标E'].max() - base_y
+    span_max = max(span_x, span_y, 1.0)
+    scale = 1000.0
+    scale_factor = scale / span_max
+
+    def normalize(x, y):
+        return (x - base_x) * scale_factor, (y - base_y) * scale_factor
+
+    def denormalize(x, y):
+        return x / scale_factor + base_x, y / scale_factor + base_y
+
+    # ========== 3. 收集岩性顶底点（归一化坐标） ==========
+    litho_groups = {}
+    for _, seg in litho_df.iterrows():
+        hid = seg['钻孔编号']
+        d_top = seg['上层位长度起始刻度']
+        d_bot = seg['下层位长度起始刻度']
+        lith = seg['岩性描述']
+        color = parse_color(seg['建模颜色'], lith)
+        if hid not in hole_coords or hid not in traj_cache:
+            continue
+        n0, e0, z0 = hole_coords[hid]
+        traj = traj_cache[hid]
+        x_top, y_top, z_top = get_interpolated_coords(traj['lengths'], traj['xs'], traj['ys'], traj['zs'], [d_top])
+        x_bot, y_bot, z_bot = get_interpolated_coords(traj['lengths'], traj['xs'], traj['ys'], traj['zs'], [d_bot])
+        x_top, y_top = x_top[0] + n0, y_top[0] + e0
+        x_bot, y_bot = x_bot[0] + n0, y_bot[0] + e0
+        z_top, z_bot = z_top[0] + z0, z_bot[0] + z0
+
+        if lith not in litho_groups:
+            litho_groups[lith] = {'color': color, 'top': [], 'bottom': []}
+        x_top_n, y_top_n = normalize(x_top, y_top)
+        x_bot_n, y_bot_n = normalize(x_bot, y_bot)
+        litho_groups[lith]['top'].append((x_top_n, y_top_n, z_top))
+        litho_groups[lith]['bottom'].append((x_bot_n, y_bot_n, z_bot))
+
+    # ========== 4. 归一化插值网格 ==========
+    grid_res = grid_resolution
+    xi_n = np.linspace(0.0, scale, grid_res)
+    yi_n = np.linspace(0.0, scale * (span_y / span_max), grid_res)
+    xi_n, yi_n = np.meshgrid(xi_n, yi_n)
+    xi_orig, yi_orig = denormalize(xi_n, yi_n)
+
+    # ========== 5. 自动计算 n_layers ==========
+    if n_layers is None:
+        all_thicknesses = []
+        for lith, data in litho_groups.items():
+            for top, bottom in zip(data['top'], data['bottom']):
+                thickness = abs(top[2] - bottom[2])
+                if 0 < thickness < 1000:
+                    all_thicknesses.append(thickness)
+        if all_thicknesses:
+            sorted_th = np.sort(all_thicknesses)
+            p5, p95 = np.percentile(sorted_th, [5, 95])
+            filtered = [t for t in sorted_th if p5 <= t <= p95]
+            avg_thickness = np.mean(filtered) if filtered else np.mean(all_thicknesses)
+            n_layers = max(5, min(25, int(6 + avg_thickness / 30)))
+        else:
+            n_layers = 12
+
+    # ========== 6. 逐岩性插值并生成对比图 ==========
+    # 取中间层作为对比截面
+    mid_layer_idx = n_layers // 2
+
+    all_results = {}
+    comparison_paths = []
+    point_counts_summary = {}
+    analysis_lines = []
+    layer_count = 0
+
+    for lith, data in litho_groups.items():
+        n_top = len(data['top'])
+        n_bot = len(data['bottom'])
+        if n_top < 5 or n_bot < 5:
+            msg = f"【{lith}】跳过：控制点过少（顶{n_top}个/底{n_bot}个，需要≥5个）"
+            print(f"!!! 克里金跳过 {msg}")
+            analysis_lines.append(msg)
+            continue
+
+        top_pts = np.array(data['top'])
+        bot_pts = np.array(data['bottom'])
+        color_rgb = data['color'][:3]
+        point_counts_summary[lith] = {'top': n_top, 'bottom': n_bot}
+
+        # 凸包裁剪
+        all_pts = np.vstack([top_pts[:, :2], bot_pts[:, :2]])
+        try:
+            hull = ConvexHull(all_pts)
+            center = all_pts[:, :2].mean(axis=0)
+            hull_pts = all_pts[hull.vertices][:, :2]
+            expanded = center + (hull_pts - center) * 1.03
+            hull_path = Path(expanded)
+            grid_points = np.column_stack((xi_n.ravel(), yi_n.ravel()))
+            inside = hull_path.contains_points(grid_points).reshape(xi_n.shape)
+        except Exception:
+            inside = np.ones(xi_n.shape, dtype=bool)
+
+        # ----- RBF 插值（用于对比） -----
+        try:
+            rbf_top = Rbf(top_pts[:, 0], top_pts[:, 1], top_pts[:, 2],
+                          function=rbf_function, smooth=rbf_smooth)
+            rbf_bot = Rbf(bot_pts[:, 0], bot_pts[:, 1], bot_pts[:, 2],
+                          function=rbf_function, smooth=rbf_smooth)
+            RBF_Z_top = rbf_top(xi_n, yi_n)
+            RBF_Z_bot = rbf_bot(xi_n, yi_n)
+        except Exception:
+            print(f"!!! {lith} RBF 插值失败，跳过")
+            analysis_lines.append(f"【{lith}】RBF 插值失败，跳过")
+            continue
+
+        # ----- 克里金插值 -----
+        try:
+            top_x_n = top_pts[:, 0]
+            top_y_n = top_pts[:, 1]
+            top_z = top_pts[:, 2]
+            bot_x_n = bot_pts[:, 0]
+            bot_y_n = bot_pts[:, 1]
+            bot_z = bot_pts[:, 2]
+
+            # 顶面克里金
+            OK_top = OrdinaryKriging(
+                top_x_n, top_y_n, top_z,
+                variogram_model=variogram_model,
+                verbose=False,
+                enable_statistics=True
+            )
+            KRIG_Z_top, KRIG_SIGMA_top = OK_top.execute('grid', xi_n[0], yi_n[:, 0])
+
+            # 底面克里金
+            OK_bot = OrdinaryKriging(
+                bot_x_n, bot_y_n, bot_z,
+                variogram_model=variogram_model,
+                verbose=False,
+                enable_statistics=True
+            )
+            KRIG_Z_bot, KRIG_SIGMA_bot = OK_bot.execute('grid', xi_n[0], yi_n[:, 0])
+
+        except Exception as e:
+            err_msg = f"【{lith}】克里金插值失败: {str(e)[:100]}"
+            print(f"!!! {err_msg}")
+            analysis_lines.append(err_msg)
+            continue
+
+        layer_count += 1
+
+        # ========== 裁剪异常值与凸包掩膜 ==========
+        z_combined = np.concatenate([top_pts[:, 2], bot_pts[:, 2]])
+        z_lo_data = np.percentile(z_combined, 0.5)
+        z_hi_data = np.percentile(z_combined, 99.5)
+        z_span = z_hi_data - z_lo_data if z_hi_data > z_lo_data else 1.0
+        z_lo = z_lo_data - z_span * 0.5
+        z_hi = z_hi_data + z_span * 0.5
+
+        KRIG_Z_top = np.clip(KRIG_Z_top, z_lo, z_hi)
+        KRIG_Z_bot = np.clip(KRIG_Z_bot, z_lo, z_hi)
+        KRIG_SIGMA_top = np.abs(KRIG_SIGMA_top)
+        KRIG_SIGMA_bot = np.abs(KRIG_SIGMA_bot)
+
+        RBF_Z_top = np.clip(RBF_Z_top, z_lo, z_hi)
+        RBF_Z_bot = np.clip(RBF_Z_bot, z_lo, z_hi)
+
+        # 凸包掩膜
+        KRIG_Z_top[~inside] = np.nan
+        KRIG_Z_bot[~inside] = np.nan
+        KRIG_SIGMA_top[~inside] = np.nan
+        KRIG_SIGMA_bot[~inside] = np.nan
+        RBF_Z_top[~inside] = np.nan
+        RBF_Z_bot[~inside] = np.nan
+
+        # 确保顶面 > 底面（交换 if needed）
+        for Z_top, Z_bot in [(KRIG_Z_top, KRIG_Z_bot), (RBF_Z_top, RBF_Z_bot)]:
+            mask = Z_top < Z_bot
+            tmp = Z_top.copy()
+            Z_top[mask] = Z_bot[mask]
+            Z_bot[mask] = tmp[mask]
+
+        # 取中间层做截面对比
+        t_mid = mid_layer_idx / (n_layers + 1)
+        KRIG_Z_mid = KRIG_Z_top * (1 - t_mid) + KRIG_Z_bot * t_mid
+        RBF_Z_mid = RBF_Z_top * (1 - t_mid) + RBF_Z_bot * t_mid
+
+        # 克里金的预测方差取顶底平均值作为截面
+        KRIG_SIGMA_mid = (KRIG_SIGMA_top + KRIG_SIGMA_bot) / 2
+        KRIG_SIGMA_mid[~inside] = np.nan
+
+        # 差值
+        DIFF = RBF_Z_mid - KRIG_Z_mid
+
+        # ========== 绘制 2x2 对比图 ==========
+        fig, axes = plt.subplots(2, 2, figsize=(FIGURE_WIDTH + 2, FIGURE_HEIGHT + 1))
+        fig.suptitle(f'克里金 vs RBF 对比分析 — {lith}', fontsize=16, fontweight='bold', y=0.98)
+
+        titles = [
+            (f'克里金插值 ({variogram_model})', KRIG_Z_mid, None, 'RdBu_r'),
+            (f'RBF 插值 ({rbf_function})', RBF_Z_mid, None, 'RdBu_r'),
+            ('预测标准差（克里金）', KRIG_SIGMA_mid, 'm', 'YlOrRd'),
+            ('RBF - 克里金 差值', DIFF, None, 'coolwarm')
+        ]
+
+        for idx, (title, data_arr, unit, cmap) in enumerate(titles):
+            ax = axes[idx // 2][idx % 2]
+            valid_data = data_arr[~np.isnan(data_arr)]
+            if len(valid_data) == 0:
+                ax.text(0.5, 0.5, '无有效数据', ha='center', va='center', transform=ax.transAxes, fontsize=12)
+                ax.set_title(title, fontsize=11)
+                continue
+
+            vmin, vmax = np.percentile(valid_data, [1, 99]) if len(valid_data) > 10 else (valid_data.min(), valid_data.max())
+            if unit == 'm' and abs(vmax - vmin) < 1:
+                vmin -= 5
+                vmax += 5
+
+            cf = ax.contourf(xi_orig, yi_orig, data_arr, levels=20, cmap=cmap, vmin=vmin, vmax=vmax)
+            # 叠加钻孔控制点
+            ax.scatter(top_pts[:, 0] / scale_factor + base_x,
+                       top_pts[:, 1] / scale_factor + base_y,
+                       c='black', s=12, marker='o', alpha=0.6, label='控制点')
+            ax.set_title(title, fontsize=11)
+            ax.set_xlabel('开孔坐标N (m)', fontsize=8)
+            ax.set_ylabel('开孔坐标E (m)', fontsize=8)
+            ax.ticklabel_format(style='plain', axis='both', useOffset=False)
+            ax.tick_params(axis='both', labelsize=7)
+            fig.colorbar(cf, ax=ax, shrink=0.7)
+
+        plt.tight_layout(rect=[0, 0, 1, 0.95])
+
+        # 保存对比图
+        lith_safe = lith.replace('/', '_').replace('\\', '_').replace(' ', '_')
+        comparison_filename = f'{base_name}_comparison_{lith_safe}.png'
+        comparison_path = os.path.join(output_dir, comparison_filename)
+        plt.savefig(comparison_path, dpi=FIGURE_DPI, bbox_inches='tight', facecolor='white')
+        plt.close()
+
+        comparison_paths.append({
+            'lith': lith,
+            'path': comparison_path,
+            'url': f'/outputs/{os.path.basename(comparison_path)}'
+        })
+
+        # ========== 分析结论文本 ==========
+        # 使用 np.square 避免 numpy 的 ** 运算符返回只读数组
+        diff_sq = np.square(DIFF)  # 总是返回可写数组
+        finite_mask = np.isfinite(diff_sq)
+        n_finite = np.sum(finite_mask)
+        if n_finite == 0:
+            rmse = 0.0
+        else:
+            rmse = np.sqrt(np.sum(diff_sq[finite_mask]) / n_finite)
+        max_diff = np.nanmax(np.abs(DIFF)) if not np.all(np.isnan(DIFF)) else 0
+        mean_sigma = np.nanmean(KRIG_SIGMA_mid) if not np.all(np.isnan(KRIG_SIGMA_mid)) else 0
+        rbf_range = np.nanmax(RBF_Z_mid) - np.nanmin(RBF_Z_mid) if not np.all(np.isnan(RBF_Z_mid)) else 0
+        krig_range = np.nanmax(KRIG_Z_mid) - np.nanmin(KRIG_Z_mid) if not np.all(np.isnan(KRIG_Z_mid)) else 0
+
+        analysis_lines.append(
+            f"【{lith}】控制点: 顶{n_top}个/底{n_bot}个 | "
+            f"RMSE={rmse:.2f}m | 最大偏差={max_diff:.2f}m | "
+            f"RBF范围={rbf_range:.1f}m | 克里金范围={krig_range:.1f}m | "
+            f"平均预测标准差={mean_sigma:.2f}m"
+        )
+
+        all_results[lith] = {
+            'RBF_Z_mid': RBF_Z_mid,
+            'KRIG_Z_mid': KRIG_Z_mid,
+            'KRIG_SIGMA_mid': KRIG_SIGMA_mid,
+            'DIFF': DIFF,
+            'comparison_path': comparison_path,
+            'rmse': float(rmse),
+            'max_diff': float(max_diff)
+        }
+
+    analysis_text = (
+        f"克里金插值分析报告\n"
+        f"{'='*50}\n"
+        f"变异函数模型: {variogram_model}\n"
+        f"分析岩性层数: {layer_count}\n"
+        f"网格分辨率: {grid_resolution}×{grid_resolution}\n"
+        f"对比截面: 第{mid_layer_idx+1}/{n_layers+2}层\n"
+        f"{'='*50}\n"
+        + "\n".join(analysis_lines) + "\n"
+        f"{'='*50}\n"
+        f"* RMSE 表示 RBF 与克里金之间的均方根误差\n"
+        f"* 预测标准差越小表示克里金对该区域预测越自信\n"
+        f"* 两者差异大时建议检查数据质量问题"
+    )
+
+    return {
+        'comparison_paths': comparison_paths,
+        'analysis_text': analysis_text,
+        'layer_count': layer_count,
+        'point_counts': point_counts_summary,
+        'all_results': {k: {kk: vv for kk, vv in v.items() if kk != 'RBF_Z_mid' and kk != 'KRIG_Z_mid' and kk != 'KRIG_SIGMA_mid' and kk != 'DIFF'}
+                        for k, v in all_results.items()}
+    }
+
+
+# ==================== 克里金曲面数值分析（新） ====================
+
+def run_kriging_2d(x_ctrl, y_ctrl, z_ctrl, grid_res, variogram_model='spherical'):
+    """
+    执行 2D 普通克里金插值。
+
+    参数:
+        x_ctrl, y_ctrl, z_ctrl: 控制点坐标与值
+        grid_res: 网格分辨率
+        variogram_model: 变异函数模型
+
+    返回:
+        dict: {grid_x, grid_y, z_pred, z_var, success, error}
+    """
+    import numpy as np
+    from pykrige.ok import OrdinaryKriging
+
+    n_points = len(x_ctrl)
+    if n_points < 3:
+        return {
+            'success': False,
+            'error': f'控制点数量不足（{n_points} < 3），无法插值'
+        }
+
+    # 去重（克里金对重复点敏感）
+    points = list(set(zip(x_ctrl, y_ctrl, z_ctrl)))
+    if len(points) < 3:
+        return {
+            'success': False,
+            'error': f'去重后控制点不足（{len(points)} < 3）'
+        }
+
+    x_u = np.array([p[0] for p in points])
+    y_u = np.array([p[1] for p in points])
+    z_u = np.array([p[2] for p in points])
+
+    gx = np.linspace(x_u.min(), x_u.max(), grid_res)
+    gy = np.linspace(y_u.min(), y_u.max(), grid_res)
+
+    try:
+        ok = OrdinaryKriging(
+            x_u, y_u, z_u,
+            variogram_model=variogram_model,
+            nlags=6,
+            enable_plotting=False,
+            verbose=False
+        )
+        z_pred, z_var = ok.execute('grid', gx, gy)
+    except Exception as e:
+        return {
+            'success': False,
+            'error': f'克里金插值失败: {str(e)}'
+        }
+
+    return {
+        'grid_x': gx,
+        'grid_y': gy,
+        'z_pred': z_pred,
+        'z_var': z_var,
+        'success': True,
+        'error': None
+    }
+
+
+def run_rbf_2d_for_comparison(x_ctrl, y_ctrl, z_ctrl, grid_x, grid_y,
+                                rbf_function=None, rbf_smooth=None):
+    """
+    用 RBF 对同样的控制点插值，输出与克里金相同形状的网格。
+    """
+    import numpy as np
+    from scipy.interpolate import Rbf
+    from config import RBF_FUNCTION, RBF_SMOOTH
+
+    rbf_function = rbf_function or RBF_FUNCTION
+    rbf_smooth = rbf_smooth if rbf_smooth is not None else RBF_SMOOTH
+
+    try:
+        rbf = Rbf(x_ctrl, y_ctrl, z_ctrl,
+                  function=rbf_function, smooth=rbf_smooth)
+        gx, gy = np.meshgrid(grid_x, grid_y)
+        z_pred = rbf(gx, gy)
+        return z_pred
+    except Exception as e:
+        print(f"!!! RBF 2D 插值失败: {e}")
+        return None
+
+
+def plot_kriging_comparison(
+    layer_name, part_name,
+    grid_x, grid_y, z_kriging, z_variance, z_rbf,
+    output_path
+):
+    """
+    生成克里金 vs RBF 的并排对比图（2x2 布局）。
+    """
+    import matplotlib.pyplot as plt
+    import numpy as np
+    from config import FIGURE_DPI, KRIGING_VALUE_CMAP, KRIGING_VARIANCE_CMAP
+
+    fig, axes = plt.subplots(2, 2, figsize=(14, 12))
+    gx, gy = np.meshgrid(grid_x, grid_y)
+
+    all_values = np.concatenate([
+        z_rbf[~np.isnan(z_rbf)].ravel(),
+        z_kriging[~np.isnan(z_kriging)].ravel()
+    ])
+    vmin = np.min(all_values) if len(all_values) > 0 else 0
+    vmax = np.max(all_values) if len(all_values) > 0 else 1
+
+    # 左上：RBF
+    ax1 = axes[0, 0]
+    im1 = ax1.pcolormesh(gx, gy, z_rbf, cmap=KRIGING_VALUE_CMAP,
+                          vmin=vmin, vmax=vmax, shading='auto')
+    ax1.set_title(f'RBF 插值 - {layer_name} {part_name}', fontsize=13, fontweight='bold')
+    ax1.set_xlabel('Easting (m)')
+    ax1.set_ylabel('Northing (m)')
+    plt.colorbar(im1, ax=ax1, label='高程 (m)')
+
+    # 右上：克里金
+    ax2 = axes[0, 1]
+    im2 = ax2.pcolormesh(gx, gy, z_kriging, cmap=KRIGING_VALUE_CMAP,
+                          vmin=vmin, vmax=vmax, shading='auto')
+    ax2.set_title(f'克里金插值 - {layer_name} {part_name}', fontsize=13, fontweight='bold')
+    ax2.set_xlabel('Easting (m)')
+    ax2.set_ylabel('Northing (m)')
+    plt.colorbar(im2, ax=ax2, label='高程 (m)')
+
+    # 左下：差异图
+    ax3 = axes[1, 0]
+    diff = z_kriging - z_rbf
+    max_abs = np.nanmax(np.abs(diff)) if not np.all(np.isnan(diff)) else 1
+    im3 = ax3.pcolormesh(gx, gy, diff, cmap='RdBu_r',
+                          vmin=-max_abs, vmax=max_abs,
+                          shading='auto')
+    ax3.set_title('差异图（克里金 - RBF）', fontsize=13, fontweight='bold')
+    ax3.set_xlabel('Easting (m)')
+    ax3.set_ylabel('Northing (m)')
+    plt.colorbar(im3, ax=ax3, label='差异 (m)')
+
+    # 右下：方差
+    ax4 = axes[1, 1]
+    im4 = ax4.pcolormesh(gx, gy, z_variance, cmap=KRIGING_VARIANCE_CMAP,
+                          shading='auto')
+    ax4.set_title(f'克里金预测方差 - {layer_name} {part_name}', fontsize=13, fontweight='bold')
+    ax4.set_xlabel('Easting (m)')
+    ax4.set_ylabel('Northing (m)')
+    plt.colorbar(im4, ax=ax4, label='方差')
+
+    fig.suptitle(f'{layer_name} - {part_name} 克里金数值分析',
+                 fontsize=16, fontweight='bold', y=0.995)
+
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=FIGURE_DPI, bbox_inches='tight', facecolor='white')
+    plt.close()
+
+    return output_path
+
+
+def generate_kriging_analysis_for_layer(
+    layer_name, top_pts, bot_pts, output_dir, base_name,
+    variogram_model=None, rbf_function=None, rbf_smooth=None
+):
+    """
+    对单个岩性层的顶面和底面执行克里金分析，输出对比图。
+
+    返回:
+        dict: {layer_name, top_path, bot_path, top_stats, bot_stats,
+               top_control_points, bot_control_points,
+               top_grid_x, top_grid_y, bot_grid_x, bot_grid_y,
+               top_z_kriging, top_z_variance, bot_z_kriging, bot_z_variance,
+               warnings}
+    """
+    import os
+    import numpy as np
+    from config import (
+        GRID_RESOLUTION, KRIGING_GRID_RES, KRIGING_DEFAULT_VARIOGRAM,
+        KRIGING_MIN_POINTS_WARN
+    )
+
+    grid_res = KRIGING_GRID_RES or GRID_RESOLUTION
+    variogram_model = variogram_model or KRIGING_DEFAULT_VARIOGRAM
+
+    warnings = []
+    result = {
+        'layer_name': layer_name,
+        'top_path': None,
+        'bot_path': None,
+        'top_stats': None,
+        'bot_stats': None,
+        'top_control_points': [],
+        'bot_control_points': [],
+        'top_grid_x': [],
+        'top_grid_y': [],
+        'bot_grid_x': [],
+        'bot_grid_y': [],
+        'top_z_kriging': [],
+        'top_z_variance': [],
+        'bot_z_kriging': [],
+        'bot_z_variance': [],
+        'warnings': warnings
+    }
+
+    # 处理顶面
+    if len(top_pts) >= 3:
+        if len(top_pts) < KRIGING_MIN_POINTS_WARN:
+            warnings.append(f'{layer_name} 顶面控制点仅 {len(top_pts)} 个，分析结果可靠性较低')
+
+        print(f"==> 分析 {layer_name} 顶面（{len(top_pts)} 个控制点）")
+        kriging_result = run_kriging_2d(
+            top_pts[:, 0], top_pts[:, 1], top_pts[:, 2],
+            grid_res, variogram_model
+        )
+
+        if kriging_result['success']:
+            z_rbf = run_rbf_2d_for_comparison(
+                top_pts[:, 0], top_pts[:, 1], top_pts[:, 2],
+                kriging_result['grid_x'], kriging_result['grid_y'],
+                rbf_function, rbf_smooth
+            )
+
+            if z_rbf is not None:
+                top_path = os.path.join(
+                    output_dir,
+                    f'{base_name}_kriging_{layer_name}_top.png'
+                )
+                plot_kriging_comparison(
+                    layer_name, '顶面',
+                    kriging_result['grid_x'], kriging_result['grid_y'],
+                    kriging_result['z_pred'], kriging_result['z_var'],
+                    z_rbf,
+                    top_path
+                )
+                result['top_path'] = top_path
+                result['top_stats'] = {
+                    'n_points': int(len(top_pts)),
+                    'variance_mean': float(np.nanmean(kriging_result['z_var'])),
+                    'variance_max': float(np.nanmax(kriging_result['z_var'])),
+                    'variance_min': float(np.nanmin(kriging_result['z_var']))
+                }
+                result['top_control_points'] = [
+                    (float(p[0]), float(p[1]), float(p[2])) for p in top_pts
+                ]
+                result['top_grid_x'] = kriging_result['grid_x'].tolist()
+                result['top_grid_y'] = kriging_result['grid_y'].tolist()
+                result['top_z_kriging'] = kriging_result['z_pred'].ravel().tolist()
+                result['top_z_variance'] = kriging_result['z_var'].ravel().tolist()
+        else:
+            warnings.append(f'{layer_name} 顶面克里金失败: {kriging_result["error"]}')
+    else:
+        warnings.append(f'{layer_name} 顶面控制点不足（{len(top_pts)} < 3），跳过')
+
+    # 处理底面
+    if len(bot_pts) >= 3:
+        if len(bot_pts) < KRIGING_MIN_POINTS_WARN:
+            warnings.append(f'{layer_name} 底面控制点仅 {len(bot_pts)} 个，分析结果可靠性较低')
+
+        print(f"==> 分析 {layer_name} 底面（{len(bot_pts)} 个控制点）")
+        kriging_result = run_kriging_2d(
+            bot_pts[:, 0], bot_pts[:, 1], bot_pts[:, 2],
+            grid_res, variogram_model
+        )
+
+        if kriging_result['success']:
+            z_rbf = run_rbf_2d_for_comparison(
+                bot_pts[:, 0], bot_pts[:, 1], bot_pts[:, 2],
+                kriging_result['grid_x'], kriging_result['grid_y'],
+                rbf_function, rbf_smooth
+            )
+
+            if z_rbf is not None:
+                bot_path = os.path.join(
+                    output_dir,
+                    f'{base_name}_kriging_{layer_name}_bot.png'
+                )
+                plot_kriging_comparison(
+                    layer_name, '底面',
+                    kriging_result['grid_x'], kriging_result['grid_y'],
+                    kriging_result['z_pred'], kriging_result['z_var'],
+                    z_rbf,
+                    bot_path
+                )
+                result['bot_path'] = bot_path
+                result['bot_stats'] = {
+                    'n_points': int(len(bot_pts)),
+                    'variance_mean': float(np.nanmean(kriging_result['z_var'])),
+                    'variance_max': float(np.nanmax(kriging_result['z_var'])),
+                    'variance_min': float(np.nanmin(kriging_result['z_var']))
+                }
+                result['bot_control_points'] = [
+                    (float(p[0]), float(p[1]), float(p[2])) for p in bot_pts
+                ]
+                result['bot_grid_x'] = kriging_result['grid_x'].tolist()
+                result['bot_grid_y'] = kriging_result['grid_y'].tolist()
+                result['bot_z_kriging'] = kriging_result['z_pred'].ravel().tolist()
+                result['bot_z_variance'] = kriging_result['z_var'].ravel().tolist()
+        else:
+            warnings.append(f'{layer_name} 底面克里金失败: {kriging_result["error"]}')
+    else:
+        warnings.append(f'{layer_name} 底面控制点不足（{len(bot_pts)} < 3），跳过')
+
+    return result
+
 
 def transform_xy_to_lonlat(x, y, zone=None):
     """
@@ -1887,3 +2765,162 @@ def add_points_to_data(loc_df):
         except Exception as e:
             print(f"坐标转换失败 {row['钻孔编号']}: {e}")
     return points
+
+
+def evaluate_rbf_loocv(x, y, z, rbf_function='multiquadric', smooth=0.01, epsilon=None):
+    """
+    用留一交叉验证（LOOCV）评估 RBF 模型的泛化误差。
+
+    参数
+    ----
+    x, y, z : numpy 数组，控制点坐标
+    rbf_function : str，核函数名
+    smooth : float，平滑度
+    epsilon : float 或 None，高斯核的形状参数
+
+    返回
+    ----
+    dict，包含 rmse, mae, max_error, n_points 等
+    """
+    n = len(x)
+    if n < 5:
+        return {
+            'rmse': None, 'mae': None, 'max_error': None,
+            'n_points': n, 'success': False,
+            'error': f'控制点数量不足（{n} < 5），无法可靠评估'
+        }
+
+    # 归一化坐标
+    x_min, x_max = x.min(), x.max()
+    y_min, y_max = y.min(), y.max()
+    z_min, z_max = z.min(), z.max()
+
+    x_span = x_max - x_min if x_max > x_min else 1.0
+    y_span = y_max - y_min if y_max > y_min else 1.0
+    z_span = z_max - z_min if z_max > z_min else 1.0
+
+    x_n = (x - x_min) / x_span
+    y_n = (y - y_min) / y_span
+    z_n = (z - z_min) / z_span
+
+    errors = []
+    needs_epsilon = rbf_function in ['gaussian', 'multiquadric',
+                                      'inverse_multiquadric', 'inverse']
+
+    for i in range(n):
+        mask = np.ones(n, dtype=bool)
+        mask[i] = False
+
+        x_train = x_n[mask]
+        y_train = y_n[mask]
+        z_train = z_n[mask]
+
+        try:
+            kwargs = {'function': rbf_function, 'smooth': smooth}
+            if epsilon is not None and needs_epsilon:
+                kwargs['epsilon'] = epsilon
+
+            rbf = Rbf(x_train, y_train, z_train, **kwargs)
+            z_pred = rbf(x_n[i], y_n[i])
+            err = (z_pred - z_n[i]) * z_span
+            errors.append(err)
+        except Exception:
+            continue
+
+    if len(errors) == 0:
+        return {
+            'rmse': None, 'mae': None, 'max_error': None,
+            'n_points': n, 'success': False,
+            'error': '所有点拟合均失败'
+        }
+
+    errors_arr = np.array(errors)
+    return {
+        'rmse': float(np.sqrt(np.mean(errors_arr ** 2))),
+        'mae': float(np.mean(np.abs(errors_arr))),
+        'max_error': float(np.max(np.abs(errors_arr))),
+        'n_points': n,
+        'success': True,
+        'error': None
+    }
+
+
+def optimize_rbf_params(
+    x, y, z,
+    functions=None,
+    smooths=None,
+    epsilons=None,
+    progress_callback=None
+):
+    """
+    网格搜索 + LOOCV，寻找最优的 RBF 参数组合。
+
+    遍历所有 (核函数, smooth, epsilon) 组合，用 evaluate_rbf_loocv 评估，
+    返回最优参数和全部结果。
+
+    progress_callback: 可选进度回调，签名为 callback(current, total, info)
+    """
+    from config import (
+        RBF_OPTIMIZE_FUNCTIONS, RBF_OPTIMIZE_SMOOTHS, RBF_OPTIMIZE_EPSILONS
+    )
+
+    if functions is None:
+        functions = RBF_OPTIMIZE_FUNCTIONS
+    if smooths is None:
+        smooths = RBF_OPTIMIZE_SMOOTHS
+    if epsilons is None:
+        epsilons = RBF_OPTIMIZE_EPSILONS
+
+    needs_epsilon = {'gaussian', 'multiquadric', 'inverse_multiquadric', 'inverse'}
+
+    # 构建组合列表
+    combos = []
+    for func in functions:
+        for sm in smooths:
+            if func in needs_epsilon:
+                for eps in epsilons:
+                    combos.append((func, sm, eps))
+            else:
+                combos.append((func, sm, None))
+
+    total = len(combos)
+    all_results = []
+    best = None
+
+    for idx, (func, sm, eps) in enumerate(combos, 1):
+        result = evaluate_rbf_loocv(x, y, z, func, sm, eps)
+
+        if not result['success']:
+            if progress_callback:
+                progress_callback(idx, total, f'{func}/smooth={sm} 失败: {result["error"]}')
+            continue
+
+        entry = {
+            'rbf_function': func,
+            'smooth': sm,
+            'epsilon': eps,
+            'rmse': result['rmse'],
+            'mae': result['mae'],
+            'max_error': result['max_error']
+        }
+        all_results.append(entry)
+
+        if best is None or result['rmse'] < best['rmse']:
+            best = entry.copy()
+
+        if progress_callback:
+            progress_callback(idx, total, f'{func}/smooth={sm} RMSE={result["rmse"]:.4f}')
+
+    if best is None:
+        return {
+            'best': None, 'all_results': [],
+            'success': False,
+            'error': '所有参数组合均失败'
+        }
+
+    return {
+        'best': best,
+        'all_results': all_results,
+        'success': True,
+        'error': None
+    }

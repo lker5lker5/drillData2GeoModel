@@ -3,6 +3,7 @@
 
 from flask import Flask, render_template, request, jsonify, send_file, send_from_directory
 import os
+import shutil
 from io import BytesIO
 import uuid
 from datetime import datetime
@@ -10,6 +11,7 @@ import threading
 import time
 import webbrowser
 import pandas as pd
+import numpy as np
 import zipfile
 from config import *
 from processors import *
@@ -42,6 +44,60 @@ def log_and_print(session_id, msg, msg_type='info'):
     print(msg)
     add_log(session_id, msg, msg_type)
 
+# ==================== Session 管理 ====================
+SESSION_TIMEOUT = SESSION_TIMEOUT_MINUTES * 60  # 转换为秒
+session_last_active = {}  # session_id -> last_active_timestamp
+
+def update_session_activity(session_id):
+    """更新 session 的最后活跃时间"""
+    if session_id:
+        session_last_active[session_id] = time.time()
+
+def get_session_output_dir(session_id):
+    """返回 session 对应的输出目录"""
+    session_dir = os.path.join(OUTPUT_FOLDER, session_id)
+    os.makedirs(session_dir, exist_ok=True)
+    return session_dir
+
+def get_session_output_url(session_id, filename):
+    """返回 session 输出文件的 URL"""
+    return f'/outputs/{session_id}/{filename}'
+
+def cleanup_session(session_id):
+    """清理 session 的所有临时数据"""
+    if not session_id:
+        return
+    log_and_print(session_id, f"==> 正在清理 session: {session_id}")
+    # 清理输出目录
+    session_output_dir = os.path.join(OUTPUT_FOLDER, session_id)
+    if os.path.exists(session_output_dir):
+        shutil.rmtree(session_output_dir, ignore_errors=True)
+        log_and_print(session_id, f"==> 已清理输出目录: {session_id}")
+    # 清理上传目录
+    session_upload_dir = os.path.join(UPLOAD_FOLDER, session_id)
+    if os.path.exists(session_upload_dir):
+        shutil.rmtree(session_upload_dir, ignore_errors=True)
+        log_and_print(session_id, f"==> 已清理上传目录: {session_id}")
+    # 清理日志
+    if session_id in log_storage:
+        del log_storage[session_id]
+    # 清理活跃记录
+    if session_id in session_last_active:
+        del session_last_active[session_id]
+    log_and_print(session_id, f"==> Session {session_id} 清理完成")
+
+def cleanup_expired_sessions():
+    """清理所有过期 session 的数据"""
+    now = time.time()
+    expired = [
+        sid for sid, last_active in session_last_active.items()
+        if (now - last_active) > SESSION_TIMEOUT
+    ]
+    for sid in expired:
+        print(f"==> Session {sid} 已过期（超过 {SESSION_TIMEOUT_MINUTES} 分钟无活动），正在清理...")
+        cleanup_session(sid)
+    return expired
+
 # ==================== 路由 ====================
 @app.route('/api/logs/<session_id>')
 def get_logs(session_id):
@@ -57,9 +113,20 @@ def get_logs(session_id):
 
 @app.route('/')
 def index():
+    # 静态文件版本号（基于文件修改时间），用于缓存破坏
+    static_ver = 1
+    try:
+        css_path = os.path.join(app.root_path, 'static', 'css', 'style.css')
+        js_path = os.path.join(app.root_path, 'static', 'js', 'main.js')
+        css_mtime = int(os.path.getmtime(css_path))
+        js_mtime = int(os.path.getmtime(js_path))
+        static_ver = max(css_mtime, js_mtime)
+    except Exception:
+        pass
     return render_template('index.html',
                            zj_key=ZJ_TIANDITU_KEY,
-                           zj_host=ZJ_TIANDITU_HOST)    
+                           zj_host=ZJ_TIANDITU_HOST,
+                           static_ver=static_ver)    
 
 @app.route('/api/template_info', methods=['GET'])
 def get_template_info():
@@ -159,6 +226,26 @@ def output_files(filename):
     return send_from_directory(OUTPUT_FOLDER, filename)
 
 
+@app.route('/api/layers_list', methods=['POST'])
+def layers_list_api():
+    """获取上传文件中的岩性列表"""
+    data = request.json
+    file_path = data.get('path')
+
+    if not file_path or not os.path.exists(file_path):
+        return jsonify({'error': '文件不存在'}), 400
+
+    try:
+        litho_df = pd.read_excel(file_path, sheet_name='岩性表')
+        layers = sorted(litho_df['岩性描述'].dropna().unique().tolist())
+        return jsonify({
+            'success': True,
+            'layers': layers
+        })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
 @app.route('/api/upload', methods=['POST'])
 def upload_file():
     """上传Excel文件"""
@@ -167,15 +254,21 @@ def upload_file():
     file = request.files['file']
     if file.filename == '':
         return jsonify({'error': '文件名为空'}), 400
-    
+
     if not file.filename.lower().endswith(('.xlsx', '.xls')):
         return jsonify({'error': '只支持 .xlsx 和 .xls 格式'}), 400
-    
+
+    # ========== 清理旧 session（如果有） ==========
+    old_session_id = request.form.get('old_session')
+    if old_session_id:
+        cleanup_session(old_session_id)
+    # ============================================
+
     # 生成唯一会话ID
     session_id = str(uuid.uuid4())[:8]
     session_dir = os.path.join(UPLOAD_FOLDER, session_id)
     os.makedirs(session_dir, exist_ok=True)
-    
+
     # 保存文件
     file_path = os.path.join(session_dir, file.filename)
     file.save(file_path)
@@ -184,6 +277,8 @@ def upload_file():
     from cache_manager import clear_cache
     clear_cache(session_id)
     # =========================================
+
+    update_session_activity(session_id)
 
     return jsonify({
         'session_id': session_id,
@@ -261,8 +356,38 @@ def save_params_api():
 def download_template():
     """下载Excel模板"""
     template_path = generate_template()
-    return send_file(template_path, as_attachment=True, 
+    return send_file(template_path, as_attachment=True,
                      download_name='钻孔数据模板.xlsx')
+
+
+@app.route('/api/cleanup_session', methods=['POST'])
+def cleanup_session_api():
+    """清理指定 session 的所有临时数据"""
+    data = request.json
+    session_id = data.get('session_id')
+    if not session_id:
+        return jsonify({'error': '缺少 session_id'}), 400
+    cleanup_session(session_id)
+    return jsonify({'success': True})
+
+
+@app.route('/api/cleanup_all_sessions', methods=['POST'])
+def cleanup_all_sessions_api():
+    """清理所有 session 的临时数据"""
+    import shutil
+    # 清理所有 outputs/ 下的 session 子目录
+    for item in os.listdir(OUTPUT_FOLDER):
+        item_path = os.path.join(OUTPUT_FOLDER, item)
+        if os.path.isdir(item_path) and len(item) == 8:
+            cleanup_session(item)
+    # 清理所有 uploads/ 下的 session 子目录
+    for item in os.listdir(UPLOAD_FOLDER):
+        item_path = os.path.join(UPLOAD_FOLDER, item)
+        if os.path.isdir(item_path) and len(item) == 8:
+            shutil.rmtree(item_path, ignore_errors=True)
+    session_last_active.clear()
+    log_storage.clear()
+    return jsonify({'success': True})
 
 
 @app.route('/api/generate_drill_views', methods=['POST'])
@@ -271,32 +396,38 @@ def generate_drill_views_api():
     data = request.json
     session_id = data.get('session_id')
     file_path = data.get('path')
-    
+
     if not session_id or not file_path:
         return jsonify({'error': '缺少必要参数'}), 400
-    
+
     if not os.path.exists(file_path):
         return jsonify({'error': '文件不存在'}), 400
-    
+
+    update_session_activity(session_id)
+
     try:
         loc_df = pd.read_excel(file_path, sheet_name='定位表')
         survey_df = pd.read_excel(file_path, sheet_name='测斜表')
         litho_df = pd.read_excel(file_path, sheet_name='岩性表')
-        
-        # 直接使用 OUTPUT_FOLDER，不创建 session_id 子目录
+
         base_name = f'drill_views_{datetime.now().strftime("%y%m%d%H%M")}'
-        output_dir = OUTPUT_FOLDER  # 直接使用输出根目录
-        os.makedirs(output_dir, exist_ok=True)
-        
+        output_dir = get_session_output_dir(session_id)
+
         views = generate_drill_views(loc_df, survey_df, litho_df, output_dir, base_name)
-        
+
+        # 修正 URL 为 session 子目录路径
+        for v in views:
+            if 'url' in v and v['url'].startswith('/outputs/'):
+                fname = v['url'][len('/outputs/'):]
+                v['url'] = f'/outputs/{session_id}/{fname}'
+
         return jsonify({
             'success': True,
             'views': views,
             'base_name': base_name,
             'session_id': session_id
         })
-        
+
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
@@ -311,6 +442,8 @@ def generate_model_api():
         return jsonify({'error': '缺少必要参数'}), 400
     if not os.path.exists(file_path):
         return jsonify({'error': '文件不存在'}), 400
+
+    update_session_activity(session_id)
 
     try:
         # ========== 读取用户参数 ==========
@@ -338,10 +471,17 @@ def generate_model_api():
             cached = get_cached_result(session_id, 'model', input_hash, params_hash)
             if cached:
                 log_and_print(session_id, "==> 命中缓存，直接返回建模结果")
+                # 修正缓存的 URL 路径
+                result = cached['result']
+                for key in ['labeled_views', 'unlabeled_views']:
+                    for item in result.get(key, []):
+                        if 'url' in item and item['url'].startswith('/outputs/'):
+                            fname = item['url'][len('/outputs/'):]
+                            item['url'] = f'/outputs/{session_id}/{fname}'
                 return jsonify({
                     'success': True,
                     'from_cache': True,
-                    **cached['result']
+                    **result
                 })
         # =============================
 
@@ -360,7 +500,8 @@ def generate_model_api():
             n_layers=n_layers,
             rbf_function=rbf_function,
             rbf_smooth=rbf_smooth,
-            grid_resolution=grid_resolution
+            grid_resolution=grid_resolution,
+            session_id=session_id
         )
 
         if not bodies or not volume_data:
@@ -374,8 +515,7 @@ def generate_model_api():
 
         # ========== 4. 输出目录 ==========
         base_name = f'model_{datetime.now().strftime("%y%m%d%H%M")}'
-        output_dir = OUTPUT_FOLDER
-        os.makedirs(output_dir, exist_ok=True)
+        output_dir = get_session_output_dir(session_id)
 
         # ========== 5. 循环生成每个视角的标注图和无标注图 ==========
         results = {'labeled': [], 'unlabeled': []}
@@ -398,7 +538,7 @@ def generate_model_api():
                     'label': view_label,
                     'user_tip': view.get('user_tip', ''),
                     'path': labeled_path,
-                    'url': f'/outputs/{os.path.basename(labeled_path)}'
+                    'url': f'/outputs/{session_id}/{os.path.basename(labeled_path)}'
                 })
                 log_and_print(session_id, f"  ==> 标注图已保存: {os.path.basename(labeled_path)}")
             except Exception as e:
@@ -419,7 +559,7 @@ def generate_model_api():
                     'label': view_label,
                     'user_tip': view.get('user_tip', ''),
                     'path': unlabeled_path,
-                    'url': f'/outputs/{os.path.basename(unlabeled_path)}'
+                    'url': f'/outputs/{session_id}/{os.path.basename(unlabeled_path)}'
                 })
                 log_and_print(session_id, f"  ==> 无标注图已保存: {os.path.basename(unlabeled_path)}")
             except Exception as e:
@@ -487,6 +627,173 @@ def generate_model_api():
             'detail': error_detail
         }), 500
 
+
+@app.route('/api/analyze_rbf_params', methods=['POST'])
+def analyze_rbf_params_api():
+    """
+    RBF 参数分析：遍历核函数和 smooth 组合，输出最优参数。
+    请求: { session_id, path, target_layer? }
+    """
+    data = request.json
+    session_id = data.get('session_id')
+    file_path = data.get('path')
+    target_layer = data.get('target_layer', 'all')
+
+    if not session_id or not file_path:
+        return jsonify({'error': '缺少必要参数'}), 400
+
+    if not os.path.exists(file_path):
+        return jsonify({'error': '文件不存在'}), 400
+
+    try:
+        from config import (
+            CACHE_ENABLED, RBF_ANALYSIS_CACHE_TYPE, RBF_RMSE_STANDARDS
+        )
+        from cache_manager import (
+            compute_file_hash, get_cached_result, save_cached_result
+        )
+        from params_manager import load_session_params, compute_params_hash
+        from processors import optimize_rbf_params
+
+        # 读取用户参数
+        user_params = load_session_params(session_id)
+        params_hash = compute_params_hash(user_params)
+
+        # 缓存键：文件哈希 + target_layer
+        cache_extra = f'_{target_layer}' if target_layer != 'all' else ''
+
+        # 缓存查询
+        input_hash = None
+        if CACHE_ENABLED:
+            input_hash = compute_file_hash(file_path)
+            cached = get_cached_result(
+                session_id, RBF_ANALYSIS_CACHE_TYPE,
+                input_hash + cache_extra, params_hash
+            )
+            if cached:
+                log_and_print(session_id, "==> 命中 RBF 参数分析缓存")
+                return jsonify({
+                    'success': True,
+                    'from_cache': True,
+                    **cached['result']
+                })
+
+        # 读取数据
+        loc_df = pd.read_excel(file_path, sheet_name='定位表')
+        survey_df = pd.read_excel(file_path, sheet_name='测斜表')
+        litho_df = pd.read_excel(file_path, sheet_name='岩性表')
+
+        # 提取控制点
+        hole_coords = {}
+        for _, row in loc_df.iterrows():
+            hid = row['钻孔编号']
+            hole_coords[hid] = (row['开孔坐标E'], row['开孔坐标N'], row['开孔高程R'])
+
+        traj_cache = {}
+        for hid in loc_df['钻孔编号']:
+            surv = survey_df[survey_df['钻孔编号'] == hid]
+            if len(surv) > 0:
+                lengths, xs, ys, zs = compute_trajectory(surv)
+                traj_cache[hid] = {'lengths': lengths, 'xs': xs, 'ys': ys, 'zs': zs}
+
+        litho_groups = {}
+        for _, seg in litho_df.iterrows():
+            hid = seg['钻孔编号']
+            d_top = seg['上层位长度起始刻度']
+            d_bot = seg['下层位长度起始刻度']
+            lith = seg['岩性描述']
+
+            if hid not in hole_coords or hid not in traj_cache:
+                continue
+
+            e0, n0, z0 = hole_coords[hid]
+            traj = traj_cache[hid]
+
+            x_top, y_top, z_top = get_interpolated_coords(
+                traj['lengths'], traj['xs'], traj['ys'], traj['zs'], [d_top])
+            x_bot, y_bot, z_bot = get_interpolated_coords(
+                traj['lengths'], traj['xs'], traj['ys'], traj['zs'], [d_bot])
+
+            x_top, y_top = x_top[0] + e0, y_top[0] + n0
+            x_bot, y_bot = x_bot[0] + e0, y_bot[0] + n0
+            z_top, z_bot = z_top[0] + z0, z_bot[0] + z0
+
+            if lith not in litho_groups:
+                litho_groups[lith] = {'top': [], 'bottom': []}
+            litho_groups[lith]['top'].append((x_top, y_top, z_top))
+            litho_groups[lith]['bottom'].append((x_bot, y_bot, z_bot))
+
+        # ========== 执行参数寻优 ==========
+        analysis_results = {}
+
+        if target_layer == 'all':
+            # 分析整个数据集：合并所有岩性层的顶面控制点
+            all_pts = []
+            for lith, group_data in litho_groups.items():
+                all_pts.extend(group_data['top'])
+
+            all_pts_arr = np.array(all_pts)
+            log_and_print(session_id, f"==> 分析整个数据集（{len(all_pts_arr)} 个控制点）")
+
+            def progress_cb(current, total, info):
+                log_and_print(session_id, f"  [{current}/{total}] {info}", 'info')
+
+            result = optimize_rbf_params(
+                x=all_pts_arr[:, 0],
+                y=all_pts_arr[:, 1],
+                z=all_pts_arr[:, 2],
+                progress_callback=progress_cb
+            )
+            analysis_results['all'] = result
+        else:
+            if target_layer not in litho_groups:
+                return jsonify({'error': f'未找到岩性: {target_layer}'}), 400
+
+            top_pts = np.array(litho_groups[target_layer]['top'])
+            log_and_print(session_id, f"==> 分析岩性: {target_layer}（{len(top_pts)} 个控制点）")
+
+            def progress_cb2(current, total, info):
+                log_and_print(session_id, f"  [{current}/{total}] {info}", 'info')
+
+            result = optimize_rbf_params(
+                x=top_pts[:, 0],
+                y=top_pts[:, 1],
+                z=top_pts[:, 2],
+                progress_callback=progress_cb2
+            )
+            analysis_results[target_layer] = result
+
+        # ========== 组织返回数据 ==========
+        result_data = {
+            'target_layer': target_layer,
+            'analysis': analysis_results,
+            'standards': RBF_RMSE_STANDARDS,
+            'layers_available': list(litho_groups.keys())
+        }
+
+        # 缓存
+        if CACHE_ENABLED and input_hash:
+            save_cached_result(
+                session_id, RBF_ANALYSIS_CACHE_TYPE,
+                input_hash + cache_extra, result_data, OUTPUT_FOLDER, params_hash
+            )
+            log_and_print(session_id, "==> RBF 参数分析结果已缓存")
+
+        log_and_print(session_id, "==> RBF 参数分析完成")
+
+        return jsonify({
+            'success': True,
+            'from_cache': False,
+            **result_data
+        })
+
+    except Exception as e:
+        log_and_print(session_id, f"!!! RBF 参数分析失败: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'error': str(e)}), 500
+
+
 @app.route('/api/ai_modeling', methods=['POST'])
 def ai_modeling_api():
     """AI建模 - 使用3张参考图生成AI建模图"""
@@ -497,6 +804,8 @@ def ai_modeling_api():
 
     if not session_id:
         return jsonify({'error': '缺少必要参数'}), 400
+
+    update_session_activity(session_id)
 
     try:
         # ========== 读取用户参数 ==========
@@ -522,6 +831,8 @@ def ai_modeling_api():
                 })
         # =============================
 
+        output_dir = get_session_output_dir(session_id)
+
         # ========== 按 AI_REFERENCE_ORDERS 选取参考图 ==========
         image_paths = []
         for order in AI_REFERENCE_IMGS:
@@ -530,46 +841,43 @@ def ai_modeling_api():
             if not view:
                 log_and_print(session_id, f"!!! 未找到 order={order} 的视图配置")
                 continue
-            
+
             order_prefix = f'{order:02d}_'
             pattern_suffix = f'unlabeled_{order_prefix}{view["name"]}.png'
-            
+
             found = False
-            # 搜索 outputs 目录下所有可能的位置
-            for root, dirs, files in os.walk(OUTPUT_FOLDER):
-                for filename in files:
+            # 搜索 session 输出目录
+            if os.path.exists(output_dir):
+                for filename in sorted(os.listdir(output_dir)):
                     if filename.endswith(pattern_suffix):
-                        full_path = os.path.join(root, filename)
+                        full_path = os.path.join(output_dir, filename)
                         image_paths.append(full_path)
                         log_and_print(session_id, f"==> 图{order} ({view['label']}): {filename}")
                         found = True
                         break
-                if found:
-                    break
-            
             if not found:
                 log_and_print(session_id, f"!!! 未找到 图{order} 对应的图片: {pattern_suffix}")
-        
+
         if len(image_paths) < 3:
             return jsonify({
                 'error': f'需要3张参考图，当前只找到 {len(image_paths)} 张。请先生成建模示意图。'
             }), 400
-        
+
         log_and_print(session_id, f"==> 使用参考图: {[os.path.basename(p) for p in image_paths]}")
         log_and_print(session_id, f"==> 颜色映射: {color_map}")
-        
+
         # 调用Qwen API
         image_urls, error = call_qwen_api_for_modeling(image_paths, color_map)
-        
+
         if error:
             return jsonify({'error': error}), 500
-        
+
         # 下载所有图片到本地
         import requests
         saved_paths = []
         for idx, img_url in enumerate(image_urls, 1):
             local_filename = f'ai_model_result_{datetime.now().strftime("%y%m%d%H%M%S")}_{idx}.png'
-            local_path = os.path.join(OUTPUT_FOLDER, local_filename)
+            local_path = os.path.join(output_dir, local_filename)
             try:
                 resp = requests.get(img_url, timeout=30)
                 if resp.status_code == 200:
@@ -578,7 +886,7 @@ def ai_modeling_api():
                     saved_paths.append({
                         'local_path': local_path,
                         'path': local_path,
-                        'url': f'/outputs/{local_filename}',
+                        'url': f'/outputs/{session_id}/{local_filename}',
                         'index': idx
                     })
                     log_and_print(session_id, f"==> AI模型图 {idx} 已保存")
@@ -586,19 +894,20 @@ def ai_modeling_api():
                     log_and_print(session_id, f"!!! 下载AI模型图 {idx} 失败: HTTP {resp.status_code}")
             except Exception as e:
                 log_and_print(session_id, f"!!! 下载AI模型图 {idx} 失败: {e}")
-        
+
         if not saved_paths:
             return jsonify({'error': '所有AI模型图下载失败'}), 500
 
         # ========== 自动评分 ==========
         from scoring import rank_ai_candidates
 
-        # 找参考图：Python 的图1 无标注图
+        # 找参考图：Python 的图1 无标注图（在 session 目录中搜索）
         ref_image_path = None
-        for f in sorted(os.listdir(OUTPUT_FOLDER)):
-            if 'unlabeled_01_main_view' in f and f.endswith('.png'):
-                ref_image_path = os.path.join(OUTPUT_FOLDER, f)
-                break
+        if os.path.exists(output_dir):
+            for f in sorted(os.listdir(output_dir)):
+                if 'unlabeled_01_main_view' in f and f.endswith('.png'):
+                    ref_image_path = os.path.join(output_dir, f)
+                    break
 
         if ref_image_path and len(saved_paths) >= 2:
             ranking = rank_ai_candidates(saved_paths, ref_image_path)
@@ -627,7 +936,7 @@ def ai_modeling_api():
 
         # ========== 保存缓存 ==========
         if CACHE_ENABLED and input_hash:
-            save_cached_result(session_id, 'ai_model', input_hash, result_data, OUTPUT_FOLDER, params_hash)
+            save_cached_result(session_id, 'ai_model', input_hash, result_data, output_dir, params_hash)
         # =============================
 
         return jsonify({
@@ -644,17 +953,20 @@ def ai_modeling_api():
 
 @app.route('/api/interactive_model', methods=['POST'])
 def interactive_model_api():
-    """生成交互式3D模型"""
+    """生成交互式3D模型（mode=drill_only: 仅钻孔; mode=full: 钻孔+地质体）"""
     data = request.json
     session_id = data.get('session_id')
     file_path = data.get('path')
-    
+    mode = data.get('mode', 'drill_only')  # drill_only 或 full
+
     if not session_id or not file_path:
         return jsonify({'error': '缺少必要参数'}), 400
-    
+
     if not os.path.exists(file_path):
         return jsonify({'error': '文件不存在'}), 400
-    
+
+    update_session_activity(session_id)
+
     try:
         from params_manager import load_session_params
 
@@ -671,28 +983,552 @@ def interactive_model_api():
         litho_df = pd.read_excel(file_path, sheet_name='岩性表')
 
         base_name = f'interactive_{datetime.now().strftime("%y%m%d%H%M")}'
-        output_dir = OUTPUT_FOLDER  # 直接使用输出根目录
-        os.makedirs(output_dir, exist_ok=True)
+        output_dir = get_session_output_dir(session_id)
 
-        html_path = generate_interactive_model(
-            loc_df, survey_df, litho_df, output_dir, base_name,
-            drill_style=drill_style, drill_radius=drill_radius,
-            n_layers=n_layers, rbf_function=rbf_function,
-            rbf_smooth=rbf_smooth, grid_resolution=grid_resolution
-        )
-        
+        if mode == 'drill_only':
+            # 钻孔专用模式：快速生成，不含地质体
+            html_path = generate_drill_model_only(
+                loc_df, survey_df, litho_df, output_dir, base_name,
+                drill_style=drill_style, drill_radius=drill_radius
+            )
+            log_and_print(session_id, "==> 生成钻孔专用3D模型（不含地质体）")
+        else:
+            # 完整模式：包含钻孔和地质体（与之前相同）
+            html_path = generate_interactive_model(
+                loc_df, survey_df, litho_df, output_dir, base_name,
+                drill_style=drill_style, drill_radius=drill_radius,
+                n_layers=n_layers, rbf_function=rbf_function,
+                rbf_smooth=rbf_smooth, grid_resolution=grid_resolution
+            )
+            log_and_print(session_id, "==> 生成完整3D模型（钻孔+地质体）")
+
         if not html_path:
             log_and_print(session_id, '!!! 无法生成交互式模型')
             return jsonify({'error': '无法生成交互式模型'}), 500
-        
+
         return jsonify({
             'success': True,
-            'html_url': f'/outputs/{os.path.basename(html_path)}',
+            'html_url': f'/outputs/{session_id}/{os.path.basename(html_path)}',
+            'mode': mode,
             'session_id': session_id
         })
-        
+
     except Exception as e:
         log_and_print(session_id, f"!!! 生成交互式模型失败: {str(e)}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/kriging_analysis', methods=['POST'])
+def kriging_analysis_api():
+    """克里金插值分析 - 生成与 RBF 对比的 2x2 并排图"""
+    data = request.json
+    session_id = data.get('session_id')
+    file_path = data.get('path')
+
+    if not session_id or not file_path:
+        return jsonify({'error': '缺少必要参数'}), 400
+
+    if not os.path.exists(file_path):
+        return jsonify({'error': '文件不存在'}), 400
+
+    update_session_activity(session_id)
+
+    try:
+        from params_manager import load_session_params, compute_params_hash
+        from cache_manager import compute_file_hash, get_cached_result, save_cached_result
+        from config import CACHE_ENABLED
+
+        user_params = load_session_params(session_id)
+        params_hash = compute_params_hash(user_params)
+
+        rbf_function = user_params.get('RBF_FUNCTION', RBF_FUNCTION)
+        rbf_smooth = user_params.get('RBF_SMOOTH', RBF_SMOOTH)
+        grid_resolution = user_params.get('GRID_RESOLUTION', GRID_RESOLUTION)
+        n_layers = user_params.get('N_LAYERS', N_LAYERS)
+        variogram_model = user_params.get('KRIGING_VARIOGRAM', KRIGING_VARIOGRAM_MODEL)
+
+        log_and_print(session_id, f"==> 克里金参数: 变异函数={variogram_model}, RBF={rbf_function}, 网格={grid_resolution}, 层数={n_layers}")
+
+        # ========== 缓存查询 ==========
+        input_hash = None
+        if CACHE_ENABLED:
+            input_hash = compute_file_hash(file_path)
+            cached = get_cached_result(session_id, 'kriging', input_hash, params_hash)
+            if cached:
+                log_and_print(session_id, "==> 命中缓存，直接返回克里金结果")
+                result = cached['result']
+                for cp in result.get('comparison_paths', []):
+                    if 'url' in cp and cp['url'].startswith('/outputs/'):
+                        fname = cp['url'][len('/outputs/'):]
+                        cp['url'] = f'/outputs/{session_id}/{fname}'
+                return jsonify({
+                    'success': True,
+                    'from_cache': True,
+                    **result
+                })
+        # =============================
+
+        output_dir = get_session_output_dir(session_id)
+
+        # ========== 1. 读取数据 ==========
+        log_and_print(session_id, "正在读取数据...")
+        loc_df = pd.read_excel(file_path, sheet_name='定位表')
+        survey_df = pd.read_excel(file_path, sheet_name='测斜表')
+        litho_df = pd.read_excel(file_path, sheet_name='岩性表')
+
+        log_and_print(session_id, f"定位表: {len(loc_df)} 行, 测斜表: {len(survey_df)} 行, 岩性表: {len(litho_df)} 行")
+
+        # ========== 2. 执行克里金分析 ==========
+        log_and_print(session_id, "正在执行克里金插值分析（含 RBF 对比）...")
+        result = perform_kriging_analysis(
+            loc_df, litho_df, survey_df,
+            n_layers=n_layers,
+            rbf_function=rbf_function,
+            rbf_smooth=rbf_smooth,
+            grid_resolution=grid_resolution,
+            variogram_model=variogram_model,
+            output_dir=output_dir
+        )
+
+        if result['layer_count'] == 0:
+            log_and_print(session_id, "!!! 未生成任何岩性的克里金插值结果")
+            # 即使未生成图片，也返回分析报告文本
+            return jsonify({
+                'success': True,
+                'comparison_paths': [],
+                'layer_count': 0,
+                'analysis_text': result['analysis_text'],
+                'point_counts': {}
+            })
+
+        log_and_print(session_id, f"==> 成功分析 {result['layer_count']} 个岩性层")
+
+        # 修正 comparison_paths 中的 URL
+        comparison_paths = result['comparison_paths']
+        for cp in comparison_paths:
+            if 'url' in cp and cp['url'].startswith('/outputs/'):
+                fname = cp['url'][len('/outputs/'):]
+                cp['url'] = f'/outputs/{session_id}/{fname}'
+
+        # ========== 3. 保存缓存 ==========
+        result_data = {
+            'comparison_paths': comparison_paths,
+            'analysis_text': result['analysis_text'],
+            'layer_count': result['layer_count'],
+            'point_counts': result['point_counts']
+        }
+
+        if CACHE_ENABLED and input_hash:
+            save_cached_result(session_id, 'kriging', input_hash, result_data, output_dir, params_hash)
+            log_and_print(session_id, "==> 已保存克里金结果到缓存")
+
+        return jsonify({
+            'success': True,
+            'from_cache': False,
+            **result_data
+        })
+
+    except ImportError as e:
+        log_and_print(session_id, f"!!! 缺少依赖: {str(e)}，请执行 pip install pykrige")
+        return jsonify({'error': f'缺少依赖包: {str(e)}，请在终端执行 pip install pykrige'}), 500
+    except Exception as e:
+        import traceback
+        error_detail = traceback.format_exc()
+        print("=" * 70)
+        print("!!! kriging_analysis_api 异常:")
+        print(error_detail)
+        print("=" * 70)
+        log_and_print(session_id, f"!!! 克里金分析失败: {str(e)}")
+        return jsonify({
+            'error': str(e),
+            'detail': error_detail
+        }), 500
+
+
+# ==================== 克里金曲面数值分析（新的独立分析） ====================
+
+@app.route('/api/kriging_surface_analysis', methods=['POST'])
+def kriging_surface_analysis_api():
+    """克里金曲面数值分析 - 顶面和底面分别分析，与 RBF 对照"""
+    data = request.json
+    session_id = data.get('session_id')
+    file_path = data.get('path')
+    variogram_model = data.get('variogram_model', None)
+
+    if not session_id or not file_path:
+        return jsonify({'error': '缺少必要参数'}), 400
+
+    if not os.path.exists(file_path):
+        return jsonify({'error': '文件不存在'}), 400
+
+    update_session_activity(session_id)
+
+    try:
+        from params_manager import load_session_params, compute_params_hash
+        from cache_manager import compute_file_hash, get_cached_result, save_cached_result
+        from config import (CACHE_ENABLED, KRIGING_SURFACE_CACHE_TYPE,
+                            KRIGING_DEFAULT_VARIOGRAM, KRIGING_VARIOGRAM_MODEL,
+                            OUTPUT_FOLDER)
+        from processors import (generate_kriging_analysis_for_layer,
+                                compute_trajectory, get_interpolated_coords)
+
+        user_params = load_session_params(session_id)
+        params_hash = compute_params_hash(user_params)
+
+        if not variogram_model:
+            variogram_model = user_params.get('KRIGING_VARIOGRAM', KRIGING_VARIOGRAM_MODEL)
+
+        log_and_print(session_id, f"==> 克里金曲面分析参数: 变异函数={variogram_model}")
+
+        # ========== 缓存查询 ==========
+        input_hash = None
+        if CACHE_ENABLED:
+            input_hash = compute_file_hash(file_path)
+            cached = get_cached_result(session_id, KRIGING_SURFACE_CACHE_TYPE, input_hash, params_hash)
+            if cached:
+                log_and_print(session_id, "==> 命中缓存，直接返回克里金曲面分析结果")
+                result = cached['result']
+                for layer in result.get('layers', []):
+                    for key in ['top_url', 'bot_url']:
+                        val = layer.get(key)
+                        if val and val.startswith('/outputs/'):
+                            fname = val[len('/outputs/'):]
+                            layer[key] = f'/outputs/{session_id}/{fname}'
+                return jsonify({
+                    'success': True,
+                    'from_cache': True,
+                    **result
+                })
+        # =============================
+
+        # ========== 读取数据 ==========
+        log_and_print(session_id, "正在读取数据...")
+        loc_df = pd.read_excel(file_path, sheet_name='定位表')
+        survey_df = pd.read_excel(file_path, sheet_name='测斜表')
+        litho_df = pd.read_excel(file_path, sheet_name='岩性表')
+
+        log_and_print(session_id, f"定位表: {len(loc_df)} 行, 测斜表: {len(survey_df)} 行, 岩性表: {len(litho_df)} 行")
+
+        # ========== 提取各岩性的控制点（原始坐标） ==========
+        log_and_print(session_id, "==> 正在提取各岩性的控制点")
+
+        hole_coords = {}
+        for _, row in loc_df.iterrows():
+            hid = row['钻孔编号']
+            hole_coords[hid] = (row['开孔坐标E'], row['开孔坐标N'], row['开孔高程R'])
+
+        traj_cache = {}
+        for hid in loc_df['钻孔编号']:
+            surv = survey_df[survey_df['钻孔编号'] == hid]
+            if len(surv) > 0:
+                lengths, xs, ys, zs = compute_trajectory(surv)
+                traj_cache[hid] = {'lengths': lengths, 'xs': xs, 'ys': ys, 'zs': zs}
+
+        litho_groups = {}
+        for _, seg in litho_df.iterrows():
+            hid = seg['钻孔编号']
+            d_top = seg['上层位长度起始刻度']
+            d_bot = seg['下层位长度起始刻度']
+            lith = seg['岩性描述']
+
+            if hid not in hole_coords or hid not in traj_cache:
+                continue
+
+            e0, n0, z0 = hole_coords[hid]
+            traj = traj_cache[hid]
+
+            x_top, y_top, z_top = get_interpolated_coords(
+                traj['lengths'], traj['xs'], traj['ys'], traj['zs'], [d_top])
+            x_bot, y_bot, z_bot = get_interpolated_coords(
+                traj['lengths'], traj['xs'], traj['ys'], traj['zs'], [d_bot])
+
+            x_top, y_top = x_top[0] + e0, y_top[0] + n0
+            x_bot, y_bot = x_bot[0] + e0, y_bot[0] + n0
+            z_top, z_bot = z_top[0] + z0, z_bot[0] + z0
+
+            if lith not in litho_groups:
+                litho_groups[lith] = {'top': [], 'bottom': []}
+            litho_groups[lith]['top'].append((x_top, y_top, z_top))
+            litho_groups[lith]['bottom'].append((x_bot, y_bot, z_bot))
+
+        log_and_print(session_id, f"==> 提取到 {len(litho_groups)} 个岩性组")
+
+        # ========== 逐层分析 ==========
+        base_name = f'kriging_{datetime.now().strftime("%y%m%d%H%M")}'
+        output_dir = get_session_output_dir(session_id)
+
+        rbf_function = user_params.get('RBF_FUNCTION', None)
+        rbf_smooth = user_params.get('RBF_SMOOTH', None)
+
+        results = []
+        all_warnings = []
+
+        for lith, data in litho_groups.items():
+            top_pts = np.array(data['top'])
+            bot_pts = np.array(data['bottom'])
+
+            log_and_print(session_id, f"==> 分析岩性: {lith}（顶{len(top_pts)}点/底{len(bot_pts)}点）")
+
+            r = generate_kriging_analysis_for_layer(
+                lith, top_pts, bot_pts,
+                output_dir, base_name,
+                variogram_model=variogram_model,
+                rbf_function=rbf_function,
+                rbf_smooth=rbf_smooth
+            )
+            results.append(r)
+            all_warnings.extend(r['warnings'])
+
+        # ========== 记录克里金分析数据 ==========
+        try:
+            from analysis_manager import record_kriging_data
+
+            layers_info = []
+            for r in results:
+                if r.get('top_path'):
+                    layers_info.append({
+                        'layer_name': r['layer_name'],
+                        'part_name': '顶面',
+                        'control_points': r.get('top_control_points', []),
+                        'grid_x': r.get('top_grid_x', []),
+                        'grid_y': r.get('top_grid_y', []),
+                        'z_kriging': r.get('top_z_kriging', []),
+                        'z_variance': r.get('top_z_variance', []),
+                        'stats': r.get('top_stats', {})
+                    })
+                if r.get('bot_path'):
+                    layers_info.append({
+                        'layer_name': r['layer_name'],
+                        'part_name': '底面',
+                        'control_points': r.get('bot_control_points', []),
+                        'grid_x': r.get('bot_grid_x', []),
+                        'grid_y': r.get('bot_grid_y', []),
+                        'z_kriging': r.get('bot_z_kriging', []),
+                        'z_variance': r.get('bot_z_variance', []),
+                        'stats': r.get('bot_stats', {})
+                    })
+
+            kriging_params = {'variogram_model': variogram_model}
+            record_kriging_data(session_id, kriging_params, layers_info)
+        except Exception as e:
+            log_and_print(session_id, f"!!! 记录克里金数据失败: {e}")
+
+        # ========== 组织返回数据 ==========
+        result_data = {
+            'layers': [],
+            'warnings': all_warnings,
+            'variogram_model': variogram_model,
+            'analysis_count': len([r for r in results if r['top_path'] or r['bot_path']])
+        }
+
+        for r in results:
+            layer_info = {
+                'layer_name': r['layer_name'],
+                'top_url': f'/outputs/{session_id}/{os.path.basename(r["top_path"])}' if r['top_path'] else None,
+                'bot_url': f'/outputs/{session_id}/{os.path.basename(r["bot_path"])}' if r['bot_path'] else None,
+                'top_stats': r['top_stats'],
+                'bot_stats': r['bot_stats']
+            }
+            result_data['layers'].append(layer_info)
+
+        # ========== 保存缓存 ==========
+        if CACHE_ENABLED and input_hash:
+            save_cached_result(session_id, KRIGING_SURFACE_CACHE_TYPE, input_hash, result_data, output_dir, params_hash)
+            log_and_print(session_id, "==> 曲面分析结果已缓存")
+
+        log_and_print(session_id, f"==> 克里金曲面分析完成，共 {result_data['analysis_count']} 个图层")
+
+        return jsonify({
+            'success': True,
+            'from_cache': False,
+            **result_data
+        })
+
+    except Exception as e:
+        log_and_print(session_id, f"!!! 克里金曲面分析失败: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'error': str(e)}), 500
+
+
+# ==================== 分析数据查询 ====================
+
+@app.route('/api/analysis_data', methods=['GET'])
+def get_analysis_data_api():
+    """获取当前会话的分析数据（RBF + 克里金）"""
+    session_id = request.args.get('session_id')
+    if not session_id:
+        return jsonify({'error': '缺少 session_id'}), 400
+
+    from analysis_manager import load_analysis_data
+    data = load_analysis_data(session_id)
+
+    has_rbf = 'rbf' in data and len(data['rbf'].get('layers', [])) > 0
+    has_kriging = 'kriging' in data and len(data['kriging'].get('layers', [])) > 0
+
+    if not has_rbf and not has_kriging:
+        return jsonify({
+            'success': False,
+            'error': '暂无分析数据，请先生成建模图或执行克里金分析'
+        })
+
+    return jsonify({
+        'success': True,
+        'has_rbf': has_rbf,
+        'has_kriging': has_kriging,
+        'data': data
+    })
+
+
+# ==================== 分析数据导出 ====================
+
+@app.route('/api/export_analysis', methods=['POST'])
+def export_analysis_api():
+    """导出分析数据为 ZIP 包"""
+    import zipfile
+    from io import BytesIO
+
+    data = request.json
+    session_id = data.get('session_id')
+    formats = data.get('formats', ['csv', 'excel'])
+
+    if not session_id:
+        return jsonify({'error': '缺少 session_id'}), 400
+
+    from analysis_manager import load_analysis_data
+
+    analysis_data = load_analysis_data(session_id)
+    if not analysis_data:
+        return jsonify({'error': '暂无分析数据'}), 400
+
+    try:
+        zip_buffer = BytesIO()
+        timestamp = datetime.now().strftime('%y%m%d%H%M')
+
+        with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zf:
+            # 1. 统计汇总表
+            summary_rows = []
+
+            if 'rbf' in analysis_data:
+                for layer in analysis_data['rbf']['layers']:
+                    s = layer['stats']
+                    summary_rows.append({
+                        '方法': 'RBF',
+                        '岩性': layer['layer_name'],
+                        '层位': layer['part_name'],
+                        '控制点数': s.get('n_points'),
+                        '最小值(m)': s.get('min'),
+                        '最大值(m)': s.get('max'),
+                        '均值(m)': s.get('mean'),
+                        '标准差(m)': s.get('std'),
+                        '平均方差': ''
+                    })
+
+            if 'kriging' in analysis_data:
+                for layer in analysis_data['kriging']['layers']:
+                    s = layer['stats']
+                    summary_rows.append({
+                        '方法': '克里金',
+                        '岩性': layer['layer_name'],
+                        '层位': layer['part_name'],
+                        '控制点数': s.get('n_points'),
+                        '最小值(m)': s.get('kriging_min'),
+                        '最大值(m)': s.get('kriging_max'),
+                        '均值(m)': s.get('kriging_mean'),
+                        '标准差(m)': s.get('kriging_std'),
+                        '平均方差': s.get('variance_mean')
+                    })
+
+            if 'csv' in formats and summary_rows:
+                df = pd.DataFrame(summary_rows)
+                csv_bytes = df.to_csv(index=False).encode('utf-8-sig')
+                zf.writestr(f'00_统计汇总_{timestamp}.csv', csv_bytes)
+
+            if 'excel' in formats and summary_rows:
+                excel_buffer = BytesIO()
+                df = pd.DataFrame(summary_rows)
+                with pd.ExcelWriter(excel_buffer, engine='openpyxl') as writer:
+                    df.to_excel(writer, sheet_name='统计汇总', index=False)
+                zf.writestr(f'00_统计汇总_{timestamp}.xlsx', excel_buffer.getvalue())
+
+            # 2. 按岩性导出各层数据
+            all_layers = set()
+            if 'rbf' in analysis_data:
+                for layer in analysis_data['rbf']['layers']:
+                    all_layers.add(layer['layer_name'])
+            if 'kriging' in analysis_data:
+                for layer in analysis_data['kriging']['layers']:
+                    all_layers.add(layer['layer_name'])
+
+            for idx, lith in enumerate(sorted(all_layers), 1):
+                folder = f'{idx:02d}_{lith}/'
+
+                # RBF 数据
+                if 'rbf' in analysis_data:
+                    for layer in analysis_data['rbf']['layers']:
+                        if layer['layer_name'] != lith:
+                            continue
+                        part = layer['part_name']
+
+                        if layer.get('control_points'):
+                            cp_df = pd.DataFrame(layer['control_points'],
+                                                  columns=['X', 'Y', 'Z'])
+                            csv_bytes = cp_df.to_csv(index=False).encode('utf-8-sig')
+                            zf.writestr(f'{folder}RBF_{part}_控制点.csv', csv_bytes)
+
+                        if layer.get('z_pred') and layer.get('grid_x'):
+                            grid_x = layer['grid_x']
+                            grid_y = layer['grid_y']
+                            z_pred = layer['z_pred']
+                            gx, gy = np.meshgrid(grid_x, grid_y)
+                            grid_df = pd.DataFrame({
+                                'X': gx.ravel(),
+                                'Y': gy.ravel(),
+                                'Z_RBF': z_pred
+                            })
+                            csv_bytes = grid_df.to_csv(index=False).encode('utf-8-sig')
+                            zf.writestr(f'{folder}RBF_{part}_网格.csv', csv_bytes)
+
+                # 克里金数据
+                if 'kriging' in analysis_data:
+                    for layer in analysis_data['kriging']['layers']:
+                        if layer['layer_name'] != lith:
+                            continue
+                        part = layer['part_name']
+
+                        if layer.get('control_points'):
+                            cp_df = pd.DataFrame(layer['control_points'],
+                                                  columns=['X', 'Y', 'Z'])
+                            csv_bytes = cp_df.to_csv(index=False).encode('utf-8-sig')
+                            zf.writestr(f'{folder}克里金_{part}_控制点.csv', csv_bytes)
+
+                        if layer.get('z_kriging') and layer.get('grid_x'):
+                            grid_x = layer['grid_x']
+                            grid_y = layer['grid_y']
+                            z_kriging = layer['z_kriging']
+                            z_var = layer.get('z_variance', [])
+                            gx, gy = np.meshgrid(grid_x, grid_y)
+                            grid_df = pd.DataFrame({
+                                'X': gx.ravel(),
+                                'Y': gy.ravel(),
+                                'Z_Kriging': z_kriging,
+                                'Variance': z_var if z_var else [None] * len(z_kriging)
+                            })
+                            csv_bytes = grid_df.to_csv(index=False).encode('utf-8-sig')
+                            zf.writestr(f'{folder}克里金_{part}_网格.csv', csv_bytes)
+
+        zip_buffer.seek(0)
+
+        return send_file(
+            zip_buffer,
+            as_attachment=True,
+            download_name=f'analysis_data_{timestamp}.zip',
+            mimetype='application/zip'
+        )
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
         return jsonify({'error': str(e)}), 500
 
 
@@ -716,9 +1552,13 @@ def multiview_ai_api():
     if not os.path.exists(best_ai_path):
         return jsonify({'error': f'主锚图不存在: {best_ai_path}'}), 400
 
+    update_session_activity(session_id)
+
     try:
         from config import MULTIVIEW_VIEW_ORDERS, VIEW_CONFIGS
         from processors import call_qwen_api_for_multiview, add_annotations_to_ai_image
+
+        output_dir = get_session_output_dir(session_id)
 
         # 选取要生成的视角
         target_orders = MULTIVIEW_VIEW_ORDERS[:view_count]
@@ -734,10 +1574,11 @@ def multiview_ai_api():
             # 查找对应的 Python 无标注图（带序号前缀）
             py_image_path = None
             pattern = f'unlabeled_{order:02d}_{view["name"]}'
-            for f in sorted(os.listdir(OUTPUT_FOLDER)):
-                if pattern in f and f.endswith('.png') and 'ai_' not in f and 'multiview' not in f:
-                    py_image_path = os.path.join(OUTPUT_FOLDER, f)
-                    break
+            if os.path.exists(output_dir):
+                for f in sorted(os.listdir(output_dir)):
+                    if pattern in f and f.endswith('.png') and 'ai_' not in f and 'multiview' not in f:
+                        py_image_path = os.path.join(output_dir, f)
+                        break
 
             if not py_image_path:
                 log_and_print(session_id, f"!!! 未找到 图{order} 的 Python 图")
@@ -758,7 +1599,7 @@ def multiview_ai_api():
                         'view_name': view['name'],
                         'view_label': view['label'],
                         'order': order,
-                        'url': f'/outputs/{os.path.basename(py_image_path)}',
+                        'url': f'/outputs/{session_id}/{os.path.basename(py_image_path)}',
                         'has_ai': False
                     })
                     continue
@@ -766,7 +1607,7 @@ def multiview_ai_api():
                 # 下载 AI 图
                 ai_url = ai_urls[0]
                 local_filename = f'multiview_ai_{order:02d}_{view["name"]}.png'
-                local_path = os.path.join(OUTPUT_FOLDER, local_filename)
+                local_path = os.path.join(output_dir, local_filename)
 
                 import requests
                 resp = requests.get(ai_url, timeout=60)
@@ -778,7 +1619,7 @@ def multiview_ai_api():
                         'view_name': view['name'],
                         'view_label': view['label'],
                         'order': order,
-                        'url': f'/outputs/{local_filename}',
+                        'url': f'/outputs/{session_id}/{local_filename}',
                         'path': local_path,
                         'has_ai': True
                     })
@@ -790,7 +1631,7 @@ def multiview_ai_api():
                         'view_name': view['name'],
                         'view_label': view['label'],
                         'order': order,
-                        'url': f'/outputs/{os.path.basename(py_image_path)}',
+                        'url': f'/outputs/{session_id}/{os.path.basename(py_image_path)}',
                         'has_ai': False
                     })
             except Exception as e:
@@ -799,7 +1640,7 @@ def multiview_ai_api():
                     'view_name': view['name'],
                     'view_label': view['label'],
                     'order': order,
-                    'url': f'/outputs/{os.path.basename(py_image_path)}',
+                    'url': f'/outputs/{session_id}/{os.path.basename(py_image_path)}',
                     'has_ai': False
                 })
 
@@ -825,13 +1666,13 @@ def multiview_ai_api():
         for img in images:
             if img.get('has_ai'):
                 annotated_filename = f'annotated_{os.path.basename(img["url"])}'
-                annotated_path = os.path.join(OUTPUT_FOLDER, annotated_filename)
+                annotated_path = os.path.join(output_dir, annotated_filename)
                 result_path = add_annotations_to_ai_image(
                     img['path'], annotated_path, z_min, z_max
                 )
                 annotated_images.append({
                     **img,
-                    'annotated_url': f'/outputs/{annotated_filename}' if result_path else img['url']
+                    'annotated_url': f'/outputs/{session_id}/{annotated_filename}' if result_path else img['url']
                 })
             else:
                 annotated_images.append({
@@ -880,6 +1721,8 @@ def multiview_texture_upgrade_api():
         return jsonify({'error': '数据文件不存在，请先上传'}), 400
 
     try:
+        update_session_activity(session_id)
+        output_dir = get_session_output_dir(session_id)
         from config import MULTIVIEW_VIEW_ORDERS, VIEW_CONFIGS
         from processors import (
             plot_geometry_with_black_edges,
@@ -908,7 +1751,8 @@ def multiview_texture_upgrade_api():
             n_layers=n_layers,
             rbf_function=rbf_function,
             rbf_smooth=rbf_smooth,
-            grid_resolution=grid_resolution
+            grid_resolution=grid_resolution,
+            session_id=session_id
         )
 
         if not volume_data:
@@ -926,7 +1770,7 @@ def multiview_texture_upgrade_api():
                 continue
 
             geo_path = plot_geometry_with_black_edges(
-                volume_data, view, OUTPUT_FOLDER, f'multiview_tex_{session_id}'
+                volume_data, view, output_dir, f'multiview_tex_{session_id}'
             )
             geometry_paths.append((order, view, geo_path))
             log_and_print(session_id, f"==> 几何图 图{order} 已生成")
@@ -951,7 +1795,7 @@ def multiview_texture_upgrade_api():
 
             # 下载 AI 图
             local_filename = f'multiview_ai_raw_{order:02d}_{view["name"]}.png'
-            local_path = os.path.join(OUTPUT_FOLDER, local_filename)
+            local_path = os.path.join(output_dir, local_filename)
 
             resp = http_requests.get(ai_url, timeout=60)
             if resp.status_code == 200:
@@ -971,7 +1815,7 @@ def multiview_texture_upgrade_api():
         composite_paths = []
         for order, view, geo_path, ai_path in ai_paths:
             out_filename = f'multiview_composite_{order:02d}_{view["name"]}.png'
-            out_path = os.path.join(OUTPUT_FOLDER, out_filename)
+            out_path = os.path.join(output_dir, out_filename)
             composite_ai_texture_with_geometry(geo_path, ai_path, out_path)
             composite_paths.append(out_path)
 
@@ -986,7 +1830,7 @@ def multiview_texture_upgrade_api():
                 'view_name': view['name'],
                 'view_label': view['label'],
                 'order': order,
-                'url': f'/outputs/{os.path.basename(unified_paths[i])}',
+                'url': f'/outputs/{session_id}/{os.path.basename(unified_paths[i])}',
                 'has_ai': True
             })
 
@@ -1050,7 +1894,7 @@ def open_browser():
 
 
 def cache_cleanup_daemon():
-    """后台线程：定期清理过期缓存"""
+    """后台线程：定期清理过期缓存和过期 session"""
     import time
     from cache_manager import cleanup_expired_cache
     from config import CACHE_CLEANUP_INTERVAL
@@ -1059,6 +1903,12 @@ def cache_cleanup_daemon():
             cleanup_expired_cache()
         except Exception as e:
             print(f"!!! 缓存清理异常: {e}")
+        try:
+            expired = cleanup_expired_sessions()
+            if expired:
+                print(f"==> 清理了 {len(expired)} 个过期 session")
+        except Exception as e:
+            print(f"!!! 会话清理异常: {e}")
         time.sleep(CACHE_CLEANUP_INTERVAL)
 
 
@@ -1070,6 +1920,24 @@ if __name__ == '__main__':
     print(f'  上传目录: {UPLOAD_FOLDER}')
     print(f'  输出目录: {OUTPUT_FOLDER}')
     print('======================================================================')
+
+    # ========== 启动时清理历史遗留数据（非 session 目录的旧文件） ==========
+    try:
+        cleaned_count = 0
+        for item in os.listdir(OUTPUT_FOLDER):
+            item_path = os.path.join(OUTPUT_FOLDER, item)
+            # 保留 session 子目录（8字符十六进制ID）
+            if os.path.isfile(item_path):
+                os.remove(item_path)
+                cleaned_count += 1
+            elif os.path.isdir(item_path) and len(item) != 8:
+                shutil.rmtree(item_path, ignore_errors=True)
+                cleaned_count += 1
+        if cleaned_count > 0:
+            print(f'==> 启动时清理了 {cleaned_count} 个遗留文件/目录')
+    except Exception as e:
+        print(f'!!! 启动清理异常: {e}')
+    # ===============================================================
 
     # 启动缓存清理线程
     threading.Thread(target=cache_cleanup_daemon, daemon=True).start()

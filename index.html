@@ -50,19 +50,32 @@
                         <button class="btn-remove" id="removeFile">×</button>
                     </div>
                     <div class="template-link">
-                        <div class="template-row">
-                            <a href="/api/template" download>📥 下载模板</a>
-                            <button class="btn-preview" id="btnPreviewData">📊 预览数据</button>
-                        </div>
-                        <div class="template-row">
-                            <button class="btn-preview" id="btnAnalyzeRBF">🔬 RBF 参数分析</button>
-                            <button class="btn-preview" id="btnNewSession">🔄 新建会话</button>
-                        </div>
+                        <a href="/api/template" download>📥 下载模板</a>
+                        <button class="btn-preview" id="btnPreviewData">📊 预览数据</button>
+                        <button class="btn-preview" id="btnNewSession">🔄 新建会话</button>
                     </div>
                 </div>
 
                 <!-- 操作按钮 -->
                 <div class="action-group">
+                    <!-- 建模参数分析 -->
+                    <div class="sidebar-group">
+                        <div class="sidebar-group-title">建模参数分析</div>
+                        <div class="sidebar-row">
+                            <button class="btn btn-sidebar" id="btnAnalyzeRBF" disabled>
+                                <span class="icon">🔬</span> RBF 参数分析
+                            </button>
+                            <button class="btn btn-sidebar" id="btnAnalyzeKriging" disabled>
+                                <span class="icon">📊</span> 克里金参数分析
+                            </button>
+                        </div>
+                        <button class="btn btn-sidebar btn-sidebar-full" id="btnModelParams" disabled>
+                            <span class="icon">⚙️</span> 建模参数
+                        </button>
+                        <div id="krigingParamTimer" class="btn-timer-container"></div>
+                        <div id="rbfTimer" class="btn-timer-container"></div>
+                    </div>
+
                     <!-- 可视化建模 -->
                     <div class="sidebar-group">
                         <div class="sidebar-group-title">可视化建模</div>
@@ -93,39 +106,31 @@
                         <div class="sidebar-group-title">插值分析</div>
                         <div class="sidebar-row">
                             <button class="btn btn-sidebar" id="btnKriging" disabled>
-                                <span class="icon">📊</span> 克里金分析
+                                <span class="icon">📊</span> 插值结果对比
                             </button>
                             <button class="btn btn-sidebar" id="btnKrigingAnalysis" disabled>
-                                <span class="icon">📊</span> 插值数值分析
+                                <span class="icon">📊</span> 克里金插值（2D）
                             </button>
                         </div>
                         <div id="interpTimer" class="btn-timer-container"></div>
                     </div>
+                    
                 </div>
 
-                <!-- ==================== 高级参数面板 ==================== -->
-                <div class="params-panel" id="paramsPanel">
-                    <div class="params-header" id="paramsHeader">
-                        <span class="params-title">⚙️ 高级参数</span>
-                        <span class="params-toggle" id="paramsToggle">▶</span>
-                    </div>
-                    <div class="params-body" id="paramsBody" style="display: none;">
-                        <div class="params-loading" id="paramsLoading">
-                            请先上传文件，展开后加载参数...
-                        </div>
-                        <div class="params-content" id="paramsContent" style="display:none;">
-                            <!-- 参数由 JS 动态生成 -->
-                        </div>
-                        <button class="btn btn-primary params-apply-btn" id="btnApplyParams" style="display:none;">
-                            应用参数
-                        </button>
-                        <p class="params-hint" id="paramsHint"></p>
-                    </div>
-                </div>
-
-                <!-- 状态提示（固定在此） -->
+                <!-- 运行状态提示栏（固定在左侧底部） -->
                 <div class="status-section" id="statusSection">
-                    <div class="status-message" id="statusMessage">加载模板数据...</div>
+                    <div class="status-bar-header">
+                        <span class="status-bar-icon">📋</span>
+                        <span class="status-bar-title">运行信息</span>
+                        <span class="status-bar-dots">
+                            <span class="dot dot-green"></span>
+                            <span class="dot dot-yellow"></span>
+                            <span class="dot dot-red"></span>
+                        </span>
+                    </div>
+                    <div class="status-body" id="statusBody">
+                        <div class="status-message" id="statusMessage">加载模板数据...</div>
+                    </div>
                 </div>
             </aside>
 

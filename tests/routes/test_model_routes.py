@@ -69,7 +69,8 @@ def mock_processors(monkeypatch):
     def mock_interactive_model(loc_df, survey_df, litho_df, output_dir, base_name,
                                drill_style='cylinder', drill_radius=3.0,
                                n_layers=None, rbf_function='multiquadric',
-                               rbf_smooth=0.1, grid_resolution=50):
+                               rbf_smooth=0.1, grid_resolution=50,
+                               method=None, kriging_variogram=None):
         path = os.path.join(output_dir, f'{base_name}_full.html')
         with open(path, 'w') as f: f.write('<html>full model</html>')
         return path

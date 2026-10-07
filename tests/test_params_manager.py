@@ -29,19 +29,14 @@ class TestGetDefaultParams:
     def test_returns_dict(self, params_mgr):
         result = params_mgr.get_default_params()
         assert isinstance(result, dict)
-        assert 'RBF_FUNCTION' in result
-        assert 'RBF_SMOOTH' in result
         assert 'GRID_RESOLUTION' in result
         assert 'N_LAYERS' in result
         assert 'DRILL_STYLE' in result
         assert 'DRILL_RADIUS' in result
-        assert 'KRIGING_VARIOGRAM' in result
 
     def test_default_values_match_config(self, params_mgr):
-        from config import RBF_FUNCTION, RBF_SMOOTH, GRID_RESOLUTION, DRILL_STYLE, DRILL_RADIUS
+        from config import GRID_RESOLUTION, DRILL_STYLE, DRILL_RADIUS
         result = params_mgr.get_default_params()
-        assert result['RBF_FUNCTION'] == RBF_FUNCTION
-        assert result['RBF_SMOOTH'] == RBF_SMOOTH
         assert result['GRID_RESOLUTION'] == GRID_RESOLUTION
         assert result['DRILL_STYLE'] == DRILL_STYLE
         assert result['DRILL_RADIUS'] == DRILL_RADIUS
@@ -57,22 +52,22 @@ class TestLoadSessionParams:
 
     def test_no_session_id_returns_defaults(self, params_mgr):
         params = params_mgr.load_session_params(None)
-        assert params['RBF_FUNCTION'] == 'multiquadric'
+        assert params['GRID_RESOLUTION'] == 50
 
     def test_empty_session_id_returns_defaults(self, params_mgr):
         params = params_mgr.load_session_params('')
-        assert params['RBF_FUNCTION'] == 'multiquadric'
+        assert params['GRID_RESOLUTION'] == 50
 
     def test_no_file_returns_defaults(self, params_mgr, sample_session_id):
         params = params_mgr.load_session_params(sample_session_id)
-        assert params['RBF_FUNCTION'] == 'multiquadric'
+        assert params['GRID_RESOLUTION'] == 50
 
     def test_load_saved_params(self, params_mgr, sample_session_id):
-        params_mgr.save_session_params(sample_session_id, {'RBF_SMOOTH': 5.0})
+        params_mgr.save_session_params(sample_session_id, {'DRILL_RADIUS': 5.0})
         loaded = params_mgr.load_session_params(sample_session_id)
-        assert loaded['RBF_SMOOTH'] == 5.0
+        assert loaded['DRILL_RADIUS'] == 5.0
         # 未保存的参数也应保留默认值
-        assert loaded['RBF_FUNCTION'] == 'multiquadric'
+        assert loaded['GRID_RESOLUTION'] == 50
 
     def test_load_corrupted_file_returns_defaults(self, params_mgr, sample_session_id):
         import config as cfg
@@ -81,14 +76,14 @@ class TestLoadSessionParams:
         with open(params_path, 'w') as f:
             f.write('不是有效的 JSON {{{')
         params = params_mgr.load_session_params(sample_session_id)
-        assert params['RBF_FUNCTION'] == 'multiquadric'
+        assert params['GRID_RESOLUTION'] == 50
 
 
 class TestSaveSessionParams:
     """测试保存会话参数"""
 
     def test_save_success(self, params_mgr, sample_session_id):
-        ok, err = params_mgr.save_session_params(sample_session_id, {'RBF_SMOOTH': 2.0})
+        ok, err = params_mgr.save_session_params(sample_session_id, {'GRID_RESOLUTION': 60})
         assert ok is True
         assert err is None
 
@@ -117,9 +112,9 @@ class TestSaveSessionParams:
 
     def test_merges_with_defaults(self, params_mgr, sample_session_id):
         """保存部分参数后，加载应合并默认值"""
-        params_mgr.save_session_params(sample_session_id, {'RBF_SMOOTH': 3.0})
+        params_mgr.save_session_params(sample_session_id, {'DRILL_RADIUS': 5.0})
         loaded = params_mgr.load_session_params(sample_session_id)
-        assert loaded['RBF_SMOOTH'] == 3.0
+        assert loaded['DRILL_RADIUS'] == 5.0
         assert loaded['GRID_RESOLUTION'] == 50  # 默认值
 
 
@@ -127,35 +122,35 @@ class TestValidateParams:
     """测试参数校验"""
 
     def test_valid_params(self, params_mgr):
-        ok, err = params_mgr.validate_params({'RBF_FUNCTION': 'gaussian'})
+        ok, err = params_mgr.validate_params({'DRILL_STYLE': 'line'})
         assert ok is True
         assert err is None
 
     def test_invalid_enum_value(self, params_mgr):
-        ok, err = params_mgr.validate_params({'RBF_FUNCTION': 'invalid_func'})
+        ok, err = params_mgr.validate_params({'DRILL_STYLE': 'invalid_style'})
         assert ok is False
-        assert 'RBF_FUNCTION' in (err or '')
+        assert 'DRILL_STYLE' in (err or '')
 
     def test_number_out_of_range_high(self, params_mgr):
-        ok, err = params_mgr.validate_params({'RBF_SMOOTH': 999.0})
+        ok, err = params_mgr.validate_params({'DRILL_RADIUS': 999.0})
         assert ok is False
-        assert 'RBF_SMOOTH' in (err or '')
+        assert 'DRILL_RADIUS' in (err or '')
 
     def test_number_out_of_range_low(self, params_mgr):
-        ok, err = params_mgr.validate_params({'RBF_SMOOTH': -1.0})
+        ok, err = params_mgr.validate_params({'DRILL_RADIUS': -1.0})
         assert ok is False
-        assert 'RBF_SMOOTH' in (err or '')
+        assert 'DRILL_RADIUS' in (err or '')
 
     def test_number_at_boundary(self, params_mgr):
-        ok, err = params_mgr.validate_params({'RBF_SMOOTH': 0.001})
+        ok, err = params_mgr.validate_params({'DRILL_RADIUS': 0.5})
         assert ok is True
-        ok, err = params_mgr.validate_params({'RBF_SMOOTH': 10.0})
+        ok, err = params_mgr.validate_params({'DRILL_RADIUS': 20.0})
         assert ok is True
 
     def test_non_numeric_for_number(self, params_mgr):
-        ok, err = params_mgr.validate_params({'RBF_SMOOTH': 'abc'})
+        ok, err = params_mgr.validate_params({'DRILL_RADIUS': 'abc'})
         assert ok is False
-        assert 'RBF_SMOOTH' in (err or '')
+        assert 'DRILL_RADIUS' in (err or '')
 
     def test_n_layers_none_is_valid(self, params_mgr):
         ok, err = params_mgr.validate_params({'N_LAYERS': None})
@@ -178,8 +173,9 @@ class TestValidateParams:
         assert ok is True
 
     def test_invalid_variogram(self, params_mgr):
-        ok, err = params_mgr.validate_params({'KRIGING_VARIOGRAM': 'invalid'})
+        ok, err = params_mgr.validate_params({'DRILL_STYLE': 'invalid'})
         assert ok is False
+        assert 'DRILL_STYLE' in (err or '')
 
     def test_empty_params_dict(self, params_mgr):
         ok, err = params_mgr.validate_params({})
@@ -196,18 +192,18 @@ class TestComputeParamsHash:
     """测试参数哈希计算"""
 
     def test_consistent_hash(self, params_mgr):
-        h1 = params_mgr.compute_params_hash({'RBF_FUNCTION': 'thin_plate', 'RBF_SMOOTH': 2.0})
-        h2 = params_mgr.compute_params_hash({'RBF_SMOOTH': 2.0, 'RBF_FUNCTION': 'thin_plate'})
+        h1 = params_mgr.compute_params_hash({'DRILL_STYLE': 'cylinder', 'DRILL_RADIUS': 3.0})
+        h2 = params_mgr.compute_params_hash({'DRILL_RADIUS': 3.0, 'DRILL_STYLE': 'cylinder'})
         assert h1 == h2  # 顺序无关
 
     def test_different_params_different_hash(self, params_mgr):
-        h1 = params_mgr.compute_params_hash({'RBF_FUNCTION': 'multiquadric'})
-        h2 = params_mgr.compute_params_hash({'RBF_FUNCTION': 'thin_plate'})
+        h1 = params_mgr.compute_params_hash({'DRILL_STYLE': 'cylinder'})
+        h2 = params_mgr.compute_params_hash({'DRILL_STYLE': 'line'})
         assert h1 != h2
 
     def test_unknown_keys_excluded(self, params_mgr):
-        h1 = params_mgr.compute_params_hash({'RBF_FUNCTION': 'multiquadric'})
-        h2 = params_mgr.compute_params_hash({'RBF_FUNCTION': 'multiquadric', 'UNKNOWN': 999})
+        h1 = params_mgr.compute_params_hash({'DRILL_STYLE': 'cylinder'})
+        h2 = params_mgr.compute_params_hash({'DRILL_STYLE': 'cylinder', 'UNKNOWN': 999})
         assert h1 == h2
 
     def test_none_vs_value(self, params_mgr):

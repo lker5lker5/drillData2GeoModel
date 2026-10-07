@@ -171,35 +171,15 @@ KRIGING_VARIOGRAM_MODEL = 'spherical'
 # 允许前端选择的变异函数模型
 KRIGING_VARIOGRAM_OPTIONS = ['spherical', 'exponential', 'gaussian', 'linear', 'power']
 
+# ==================== 插值方法配置 ====================
+# 默认插值方法：'rbf' 或 'kriging'
+INTERPOLATION_METHOD = 'rbf'
+# 前端可选的插值方法
+INTERPOLATION_METHOD_OPTIONS = ['rbf', 'kriging']
+
 # ==================== 建模参数前端可调配置 ====================
 # 允许用户在前端调整的参数清单
 USER_ADJUSTABLE_PARAMS = {
-    'RBF_FUNCTION': {
-        'label': '插值核函数',
-        'type': 'enum',
-        'group': 'RBF 插值参数',
-        'options': ['linear', 'thin_plate', 'multiquadric', 'inverse', 'gaussian'],
-        'default': RBF_FUNCTION,
-        'description': '决定插值曲面的形态。linear 最稳健，thin_plate 最平滑'
-    },
-    'RBF_SMOOTH': {
-        'label': '插值平滑度',
-        'type': 'number',
-        'group': 'RBF 插值参数',
-        'min': 0.001,
-        'max': 10.0,
-        'step': 0.001,
-        'default': RBF_SMOOTH,
-        'description': '值越小越精确穿过控制点，值越大越平滑'
-    },
-    'KRIGING_VARIOGRAM': {
-        'label': '克里金变异函数',
-        'type': 'enum',
-        'group': '克里金参数',
-        'options': KRIGING_VARIOGRAM_OPTIONS,
-        'default': KRIGING_VARIOGRAM_MODEL,
-        'description': '克里金插值的变异函数模型。spherical 最常用，gaussian 更平滑'
-    },
     'GRID_RESOLUTION': {
         'label': '网格分辨率',
         'type': 'number',
@@ -267,6 +247,41 @@ REPORT_SCATTER_COLOR = '#1565C0'
 REPORT_HISTOGRAM_COLOR = '#2E7D32'
 REPORT_DIFF_COLOR = '#F57C00'
 REPORT_SCATTER_MAX_POINTS = 500
+
+# ==================== 克里金参数分析配置 ====================
+# 候选变异函数模型列表
+KRIGING_OPTIMIZE_VARIOGRAMS = ['spherical', 'exponential', 'gaussian', 'linear', 'power']
+
+# 克里金建模默认变异函数模型
+KRIGING_MODEL_DEFAULT_VARIOGRAM = 'spherical'
+# 前端可选的克里金建模变异函数模型
+KRIGING_MODEL_VARIOGRAM_OPTIONS = ['spherical', 'exponential', 'gaussian', 'linear', 'power']
+
+# 参数分析缓存类型
+KRIGING_ANALYSIS_CACHE_TYPE = 'kriging_analysis'
+
+# RMSE 参考标准（复用 RBF 的标准）
+KRIGING_RMSE_STANDARDS = [
+    {'max': 5,   'label': '优秀', 'suggestion': '直接采用',           'color': '#2E7D32'},
+    {'max': 15,  'label': '良好', 'suggestion': '可用于宏观展示',     'color': '#1565C0'},
+    {'max': 30,  'label': '一般', 'suggestion': '需检查数据质量',     'color': '#F57C00'},
+    {'max': 99999, 'label': '差', 'suggestion': '数据可能有问题，或控制点分布太稀疏', 'color': '#C62828'},
+]
+
+# 块基比（Nugget/Sill Ratio）参考标准
+KRIGING_NUGGET_RATIO_STANDARDS = [
+    {'max': 0.25,   'label': '强空间相关性', 'description': '块金效应弱，空间变异主要由结构性因素引起', 'color': '#2E7D32'},
+    {'max': 0.75,   'label': '中等空间相关性', 'description': '空间变异由结构性因素和随机因素共同引起', 'color': '#F57C00'},
+    {'max': 99999,  'label': '弱空间相关性', 'description': '块金效应强，接近纯块金效应，空间自相关性弱', 'color': '#C62828'},
+]
+
+# R² 参考标准（R² 越高越好，使用 min 阈值）
+KRIGING_R2_STANDARDS = [
+    {'min': 0.9,   'label': '优秀', 'description': '变异函数模型拟合效果很好', 'color': '#2E7D32'},
+    {'min': 0.7,   'label': '良好', 'description': '变异函数模型拟合效果较好', 'color': '#1565C0'},
+    {'min': 0.5,   'label': '一般', 'description': '变异函数模型拟合效果一般', 'color': '#F57C00'},
+    {'min': -99999, 'label': '差', 'description': '变异函数模型拟合效果差，需考虑更换模型或检查数据', 'color': '#C62828'},
+]
 
 # ==================== RBF 参数分析配置 ====================
 # 是否启用 RBF 参数分析功能

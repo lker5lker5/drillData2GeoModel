@@ -160,7 +160,7 @@ class TestSessionParamsRoutes:
 
     def test_save_params_missing_session(self, client):
         resp = client.post('/api/save_params', json={
-            'params': {'RBF_SMOOTH': 1.0}
+            'params': {'DRILL_RADIUS': 1.0}
         })
         assert resp.status_code == 400
 
@@ -168,7 +168,7 @@ class TestSessionParamsRoutes:
         # 保存参数
         save_resp = client.post('/api/save_params', json={
             'session_id': 'test_save_params',
-            'params': {'RBF_SMOOTH': 5.0}
+            'params': {'DRILL_RADIUS': 5.0}
         })
         assert save_resp.status_code == 200
         save_data = save_resp.get_json()
@@ -177,12 +177,12 @@ class TestSessionParamsRoutes:
         # 读取参数
         get_resp = client.get('/api/session_params?session_id=test_save_params')
         get_data = get_resp.get_json()
-        assert get_data['params']['RBF_SMOOTH'] == 5.0
+        assert get_data['params']['DRILL_RADIUS'] == 5.0
 
     def test_save_invalid_params(self, client):
         resp = client.post('/api/save_params', json={
             'session_id': 'test_invalid',
-            'params': {'RBF_SMOOTH': -1.0}
+            'params': {'DRILL_RADIUS': -1.0}
         })
         data = resp.get_json()
         # 应返回错误

@@ -870,13 +870,16 @@ def generate_drill_model_only(loc_df, survey_df, litho_df, output_dir, base_name
 def generate_interactive_model(loc_df, survey_df, litho_df, output_dir, base_name,
                                 drill_style=None, drill_radius=None,
                                 n_layers=None, rbf_function=None,
-                                rbf_smooth=None, grid_resolution=None):
+                                rbf_smooth=None, grid_resolution=None,
+                                method=None, kriging_variogram=None):
     """
     生成可交互式3D模型。
 
     参数:
         drill_style / drill_radius: 钻孔样式参数，None=使用config默认值
         n_layers / rbf_function / rbf_smooth / grid_resolution: 插值参数，None=使用config默认值
+        method: 'rbf' 或 'kriging'，None=使用config默认值
+        kriging_variogram: 克里金变异函数模型，None=使用config默认值
     """
     from config import (DRILL_STYLE as CFG_STYLE, DRILL_RADIUS as CFG_RADIUS,
                         DRILL_FORCE_LINE_THRESHOLD, DRILL_DEGRADE_THRESHOLD)
@@ -891,7 +894,9 @@ def generate_interactive_model(loc_df, survey_df, litho_df, output_dir, base_nam
         n_layers=n_layers,
         rbf_function=rbf_function,
         rbf_smooth=rbf_smooth,
-        grid_resolution=grid_resolution
+        grid_resolution=grid_resolution,
+        method=method,
+        kriging_variogram=kriging_variogram
     )
     
     if not volume_data:
@@ -1800,18 +1805,27 @@ def build_geological_bodies_with_volume_v2(loc_df, litho_df, survey_df,
                                             rbf_function=None,
                                             rbf_smooth=None,
                                             grid_resolution=None,
-                                            session_id=None):
+                                            session_id=None,
+                                            method=None,
+                                            kriging_variogram=None):
     """
     构建地质体模型（含多层体数据）—— 归一化坐标训练+预测，原始坐标输出
+    支持 RBF 和克里金两种插值方法。
 
     参数:
         n_layers: 体渲染层数，None=自动计算
         rbf_function: RBF核函数，None=使用config默认值
         rbf_smooth: RBF平滑度，None=使用config默认值
         grid_resolution: 网格分辨率，None=使用config默认值
+        method: 'rbf' 或 'kriging'，None=使用config默认值
+        kriging_variogram: 克里金变异函数模型，None=使用config默认值
     """
-    from config import (RBF_FUNCTION as CFG_RBF, RBF_SMOOTH as CFG_SMOOTH,
-                        GRID_RESOLUTION as CFG_GRID, N_LAYERS as CFG_NLAYERS)
+    from config import (
+        RBF_FUNCTION as CFG_RBF, RBF_SMOOTH as CFG_SMOOTH,
+        GRID_RESOLUTION as CFG_GRID, N_LAYERS as CFG_NLAYERS,
+        INTERPOLATION_METHOD as CFG_METHOD,
+        KRIGING_MODEL_DEFAULT_VARIOGRAM as CFG_KRIG_VGM
+    )
 
     if n_layers is None:
         n_layers = CFG_NLAYERS  # 可能为None，后面会走自动计算
@@ -1821,6 +1835,14 @@ def build_geological_bodies_with_volume_v2(loc_df, litho_df, survey_df,
         rbf_smooth = CFG_SMOOTH
     if grid_resolution is None:
         grid_resolution = CFG_GRID
+    if method is None:
+        method = CFG_METHOD
+    if kriging_variogram is None:
+        kriging_variogram = CFG_KRIG_VGM
+
+    print(f"==> 建模插值方法: {method}")
+    if method == 'kriging':
+        print(f"==> 克里金变异函数: {kriging_variogram}")
     
     # ========== 1. 孔口坐标（X=N, Y=E 约定，与 plot_drill_holes_on_ax 一致）==========
     hole_coords = {}
@@ -1936,19 +1958,56 @@ def build_geological_bodies_with_volume_v2(loc_df, litho_df, survey_df,
         except Exception:
             inside = np.ones(xi_n.shape, dtype=bool)
                 
-        # RBF 在归一化坐标上训练
-        try:
-            rbf_top = Rbf(top_pts[:, 0], top_pts[:, 1], top_pts[:, 2],
-                          function=rbf_function, smooth=rbf_smooth)
-            rbf_bot = Rbf(bot_pts[:, 0], bot_pts[:, 1], bot_pts[:, 2],
-                          function=rbf_function, smooth=rbf_smooth)
-        except Exception as e:
-            print(f"!!! 岩性 {lith} 插值失败: {e}")
-            continue
-        
-        # 在归一化网格上预测
-        Z_top = rbf_top(xi_n, yi_n)
-        Z_bot = rbf_bot(xi_n, yi_n)
+        # ========== 插值（根据 method 分支） ==========
+        Z_top = None
+        Z_bot = None
+
+        if method == 'kriging':
+            # 克里金插值
+            try:
+                from pykrige.ok import OrdinaryKriging
+
+                # 顶面
+                ok_top = OrdinaryKriging(
+                    top_pts[:, 0], top_pts[:, 1], top_pts[:, 2],
+                    variogram_model=kriging_variogram,
+                    nlags=6, enable_plotting=False, verbose=False
+                )
+                z_top_result, _ = ok_top.execute('grid',
+                    np.linspace(xi_n.min(), xi_n.max(), xi_n.shape[1]),
+                    np.linspace(yi_n.min(), yi_n.max(), xi_n.shape[0]))
+                Z_top = z_top_result
+
+                # 底面
+                ok_bot = OrdinaryKriging(
+                    bot_pts[:, 0], bot_pts[:, 1], bot_pts[:, 2],
+                    variogram_model=kriging_variogram,
+                    nlags=6, enable_plotting=False, verbose=False
+                )
+                z_bot_result, _ = ok_bot.execute('grid',
+                    np.linspace(xi_n.min(), xi_n.max(), xi_n.shape[1]),
+                    np.linspace(yi_n.min(), yi_n.max(), xi_n.shape[0]))
+                Z_bot = z_bot_result
+            except Exception as e:
+                print(f"!!! 岩性 {lith} 克里金插值失败: {e}，回退到 RBF")
+                method_fallback = True
+            else:
+                method_fallback = False
+        else:
+            method_fallback = True
+
+        if method_fallback:
+            # RBF 插值（作为默认或回退）
+            try:
+                rbf_top = Rbf(top_pts[:, 0], top_pts[:, 1], top_pts[:, 2],
+                              function=rbf_function, smooth=rbf_smooth)
+                rbf_bot = Rbf(bot_pts[:, 0], bot_pts[:, 1], bot_pts[:, 2],
+                              function=rbf_function, smooth=rbf_smooth)
+                Z_top = rbf_top(xi_n, yi_n)
+                Z_bot = rbf_bot(xi_n, yi_n)
+            except Exception as e:
+                print(f"!!! 岩性 {lith} 插值失败: {e}")
+                continue
         
         # 裁剪异常外推
         z_combined = np.concatenate([top_pts[:, 2], bot_pts[:, 2]])
@@ -2916,6 +2975,208 @@ def optimize_rbf_params(
             'best': None, 'all_results': [],
             'success': False,
             'error': '所有参数组合均失败'
+        }
+
+    return {
+        'best': best,
+        'all_results': all_results,
+        'success': True,
+        'error': None
+    }
+
+
+def evaluate_kriging_loocv(x, y, z, variogram_model='spherical'):
+    """
+    用留一交叉验证（LOOCV）评估克里金模型的泛化误差。
+
+    参数
+    ----
+    x, y, z : numpy 数组，控制点坐标与高程值
+    variogram_model : str，变异函数模型
+
+    返回
+    ----
+    dict，包含 rmse, mae, max_error, n_points, success, error
+    """
+    import numpy as np
+    from pykrige.ok import OrdinaryKriging
+
+    n = len(x)
+    if n < 5:
+        return {
+            'rmse': None, 'mae': None, 'max_error': None,
+            'n_points': n, 'success': False,
+            'error': f'控制点数量不足（{n} < 5），无法可靠评估'
+        }
+
+    errors = []
+    for i in range(n):
+        mask = np.ones(n, dtype=bool)
+        mask[i] = False
+
+        x_train = x[mask]
+        y_train = y[mask]
+        z_train = z[mask]
+
+        try:
+            ok = OrdinaryKriging(
+                x_train, y_train, z_train,
+                variogram_model=variogram_model,
+                nlags=6, enable_plotting=False, verbose=False
+            )
+            z_pred, _ = ok.execute('points', [float(x[i])], [float(y[i])])
+            err = float(z_pred[0]) - z[i]
+            errors.append(err)
+        except Exception:
+            continue
+
+    if len(errors) == 0:
+        return {
+            'rmse': None, 'mae': None, 'max_error': None,
+            'n_points': n, 'success': False,
+            'error': '所有点拟合均失败'
+        }
+
+    errors_arr = np.array(errors)
+    return {
+        'rmse': float(np.sqrt(np.mean(errors_arr ** 2))),
+        'mae': float(np.mean(np.abs(errors_arr))),
+        'max_error': float(np.max(np.abs(errors_arr))),
+        'n_points': n,
+        'success': True,
+        'error': None
+    }
+
+
+def fit_variogram_full_model(x, y, z, variogram_model):
+    """
+    在全部数据上拟合克里金模型，提取变异函数关键参数。
+
+    返回 dict: { nugget, sill, range_val, nugget_ratio, r_squared }
+    或 None（拟合失败或无法提取参数）。
+    """
+    import numpy as np
+    from pykrige.ok import OrdinaryKriging
+
+    try:
+        ok = OrdinaryKriging(
+            x, y, z,
+            variogram_model=variogram_model,
+            nlags=6, enable_plotting=False, verbose=False
+        )
+
+        params = ok.variogram_model_parameters
+        if params is None or len(params) == 0:
+            return None
+
+        # 不同模型参数含义不同
+        # spherical/exponential/gaussian: [nugget, sill, range]
+        # linear: [nugget, slope]
+        # power: [nugget, scale, exponent]
+        nugget = float(params[0])
+
+        sill = None
+        range_val = None
+        nugget_ratio = None
+
+        if variogram_model in ('spherical', 'exponential', 'gaussian'):
+            partial_sill = float(params[1])
+            range_val = float(params[2])
+            total_sill = nugget + partial_sill
+            sill = total_sill  # 基台值 = 块金值 + 偏基台值
+            if total_sill > 0:
+                nugget_ratio = round(nugget / total_sill, 4)
+        elif variogram_model == 'linear':
+            range_val = None  # 线性模型无变程
+        elif variogram_model == 'power':
+            range_val = None
+
+        # 计算变异函数拟合的 R²
+        r_squared = None
+        if hasattr(ok, 'lags') and ok.lags is not None and len(ok.lags) > 1:
+            try:
+                # pykrige 提供 variogram_function(m, d) 计算理论变异函数值
+                if hasattr(ok, 'variogram_function') and callable(ok.variogram_function):
+                    fitted_semi = ok.variogram_function(ok.variogram_model_parameters, ok.lags)
+                    exp_semi = ok.semivariance
+                    ss_res = np.nansum((exp_semi - fitted_semi) ** 2)
+                    ss_tot = np.nansum((exp_semi - np.nanmean(exp_semi)) ** 2)
+                    if ss_tot > 0:
+                        r_squared = round(1.0 - ss_res / ss_tot, 4)
+            except Exception:
+                pass
+
+        return {
+            'nugget': round(nugget, 4),
+            'sill': round(sill, 4) if sill is not None else None,
+            'range': round(range_val, 4) if range_val is not None else None,
+            'nugget_ratio': nugget_ratio,
+            'r_squared': r_squared,
+        }
+    except Exception:
+        return None
+
+
+def optimize_kriging_params(
+    x, y, z,
+    variograms=None,
+    progress_callback=None
+):
+    """
+    遍历候选变异函数模型 + LOOCV，寻找最优的克里金参数组合。
+
+    参数
+    ----
+    x, y, z : numpy 数组，控制点坐标与高程值
+    variograms : list 或 None，候选变异函数列表，None 表示使用默认配置
+    progress_callback : 可选进度回调，签名为 callback(current, total, info)
+
+    返回
+    ----
+    dict，包含 best, all_results, success, error
+    """
+    from config import KRIGING_OPTIMIZE_VARIOGRAMS
+
+    if variograms is None:
+        variograms = KRIGING_OPTIMIZE_VARIOGRAMS
+
+    total = len(variograms)
+    all_results = []
+    best = None
+
+    for idx, vgm in enumerate(variograms, 1):
+        result = evaluate_kriging_loocv(x, y, z, vgm)
+
+        if not result['success']:
+            if progress_callback:
+                progress_callback(idx, total, f'{vgm} 失败: {result["error"]}')
+            continue
+
+        entry = {
+            'variogram_model': vgm,
+            'rmse': result['rmse'],
+            'mae': result['mae'],
+            'max_error': result['max_error']
+        }
+
+        # 提取变异函数参数（块金值、基台值、变程、块基比、R²）
+        variogram_params = fit_variogram_full_model(x, y, z, vgm)
+        if variogram_params:
+            entry.update(variogram_params)
+
+        all_results.append(entry)
+
+        if best is None or result['rmse'] < best['rmse']:
+            best = entry.copy()
+
+        if progress_callback:
+            progress_callback(idx, total, f'{vgm} RMSE={result["rmse"]:.4f}')
+
+    if best is None:
+        return {
+            'best': None, 'all_results': [],
+            'success': False,
+            'error': '所有变异函数模型均失败'
         }
 
     return {

@@ -28,6 +28,7 @@ const btnAIModeling = document.getElementById('btnAIModeling');
 const btnInteractive = document.getElementById('btnInteractive');
 
 const fullscreenModal = document.getElementById('fullscreenModal');
+const btnModelParams = document.getElementById('btnModelParams');
 const fullscreenImage = document.getElementById('fullscreenImage');
 const fullscreenClose = document.getElementById('fullscreenClose');
 
@@ -54,6 +55,7 @@ function updateButtonStates() {
     var btnMultiviewAI = document.getElementById('btnMultiviewAI');
     var krigAnalysis = document.getElementById('btnKrigingAnalysis');
     var btnAnalyzeRBF = document.getElementById('btnAnalyzeRBF');
+    var btnAnalyzeKriging = document.getElementById('btnAnalyzeKriging');
 
     btnDrillViews.disabled = !hasFile;
     btnModelViews.disabled = !hasFile;
@@ -63,6 +65,8 @@ function updateButtonStates() {
     if (krigAnalysis) krigAnalysis.disabled = !hasFile;
     if (btnMultiviewAI) btnMultiviewAI.disabled = !hasAISelected;
     if (btnAnalyzeRBF) btnAnalyzeRBF.disabled = !hasFile;
+    if (btnAnalyzeKriging) btnAnalyzeKriging.disabled = !hasFile;
+    if (btnModelParams) btnModelParams.disabled = !hasFile;
 }
 
 // ==================== 统一卡片渲染 ====================
@@ -333,7 +337,8 @@ const BTN_TIMER_MAP = {
     btnMultiviewAI: 'visTimer',
     btnKriging: 'interpTimer',
     btnKrigingAnalysis: 'interpTimer',
-    btnAnalyzeRBF: 'interpTimer'
+    btnAnalyzeRBF: 'rbfTimer',
+    btnAnalyzeKriging: 'krigingParamTimer'
 };
 
 /** 每个容器内当前活跃的 timer 控制器 */
@@ -1011,7 +1016,7 @@ if (btnKriging) {
 
             renderKrigingResults(data);
             updateButtonStates();
-            showResultTabs();
+            hideResultTabs();
             if (data.from_cache) {
                 setStatus('==> 使用缓存结果（来自上次计算）', 'success');
             } else {
@@ -1037,14 +1042,27 @@ function renderKrigingResults(data) {
     var reportText = (data && data.analysis_text) || '暂无分析报告数据';
     var layerCount = (data && data.layer_count) || 0;
 
-    var html = '<h2>📊 克里金 vs RBF 对比分析</h2>';
+    // 用包装容器隔离，避免 CSS > div:not(.linked-carousel) 的 flex 链影响
+    var html = '<div class="kriging-results-wrapper">';
+
+    html += '<h2>📊 克里金 vs RBF 对比分析</h2>';
 
     if (hasImages) {
         html += '<p style="color:#666;font-size:13px;margin-bottom:12px;">';
         html += '分析完成，共 ' + layerCount + ' 个岩性层。';
         html += '每张图为 2×2 并排布局（左上:克里金 / 右上:RBF / 左下:预测标准差 / 右下:差值）。';
         html += '</p>';
+    }
 
+    // ===== Tab 切换 =====
+    html += '<div class="kriging-tabs">';
+    html += '  <button class="kriging-tab active" data-tab="chart">📊 对比图</button>';
+    html += '  <button class="kriging-tab" data-tab="report">📋 数值分析报告</button>';
+    html += '</div>';
+
+    // ===== Tab 内容：对比图 =====
+    html += '<div class="kriging-tab-content active" id="krigingTabChart">';
+    if (hasImages) {
         if (data.comparison_paths.length > 1) {
             html += '<div class="kriging-layer-selector" id="krigingLayerSelector">';
             for (var i = 0; i < data.comparison_paths.length; i++) {
@@ -1054,33 +1072,27 @@ function renderKrigingResults(data) {
             html += '</div>';
         }
 
-        html += '<div class="uniform-card" style="margin-bottom:16px;">';
         html += '<div id="krigingComparisonDisplay">';
-        html += '<div class="card-img-wrapper" style="cursor:pointer;" onclick="openFullscreen(\'' + data.comparison_paths[0].url + '\')">';
-        html += '<img src="' + data.comparison_paths[0].url + '?t=' + Date.now() + '" alt="克里金对比分析图" style="width:100%;max-height:600px;object-fit:contain;background:#f8f9fc;display:block;">';
+        html += '<img src="' + data.comparison_paths[0].url + '?t=' + Date.now() + '" alt="克里金对比分析图" class="kriging-comparison-img" onclick="openFullscreen(\'' + data.comparison_paths[0].url + '\')" style="cursor:pointer;">';
         html += '</div>';
-        html += '</div>';
-        html += '</div>';
+    } else {
+        html += '<p style="color:#999;text-align:center;padding:40px;">暂无对比图</p>';
     }
+    html += '</div>'; // krigingTabChart
 
-    // ===== 分析报告（可折叠，默认展开） =====
-    html += '<div class="kriging-analysis-report">';
-    html += '<div class="kriging-report-header" id="krigingReportToggle">';
-    html += '<span class="kriging-report-title">📋 数值分析报告</span>';
-    html += '<span style="display:flex;align-items:center;gap:8px;">';
-    html += '<button class="btn-report-download" id="btnReportDownload" title="下载报告">⬇ 导出</button>';
-    html += '<span class="kriging-report-toggle open" id="krigingReportArrow">▶</span>';
-    html += '</span>';
+    // ===== Tab 内容：数值分析报告 =====
+    html += '<div class="kriging-tab-content" id="krigingTabReport">';
+    html += '<div style="display:flex;justify-content:flex-end;margin-bottom:8px;">';
+    html += '  <button class="btn-report-download" id="btnReportDownload" title="下载报告">⬇ 导出报告</button>';
     html += '</div>';
-    html += '<div class="kriging-report-body" id="krigingReportBody">';
-    // 用 textContent 安全地设置报告文本，防止特殊字符破坏 HTML
-    html += '<pre id="krigingReportPre"></pre>';
-    html += '</div>';
-    html += '</div>';
+    html += '<pre id="krigingReportPre" style="white-space:pre-wrap;font-size:13px;line-height:1.6;color:#333;"></pre>';
+    html += '</div>'; // krigingTabReport
+
+    html += '</div>'; // kriging-results-wrapper
 
     resultsSection.innerHTML = html;
 
-    // 安全地设置报告文本（避免 innerHTML 对特殊字符的解析问题）
+    // 安全地设置报告文本
     var preEl = document.getElementById('krigingReportPre');
     if (preEl) {
         preEl.textContent = reportText;
@@ -1099,20 +1111,26 @@ function renderKrigingResults(data) {
             var index = parseInt(btn.dataset.index);
             var path = data.comparison_paths[index].url;
             var display = document.getElementById('krigingComparisonDisplay');
-            display.innerHTML = '<div class="card-img-wrapper" style="cursor:pointer;" onclick="openFullscreen(\'' + path + '\')">' +
-                '<img src="' + path + '?t=' + Date.now() + '" alt="克里金对比分析图" style="width:100%;max-height:600px;object-fit:contain;background:#f8f9fc;display:block;"></div>';
+            display.innerHTML = '<img src="' + path + '?t=' + Date.now() + '" alt="克里金对比分析图" class="kriging-comparison-img" onclick="openFullscreen(\'' + path + '\')" style="cursor:pointer;">';
         });
     }
 
-    // 绑定报告折叠事件
-    var reportHeader = document.getElementById('krigingReportToggle');
-    var reportBody = document.getElementById('krigingReportBody');
-    var reportArrow = document.getElementById('krigingReportArrow');
-    if (reportHeader && reportBody && reportArrow) {
-        reportHeader.addEventListener('click', function(e) {
-            if (e.target.closest('#btnReportDownload')) return;
-            reportBody.classList.toggle('collapsed');
-            reportArrow.classList.toggle('open');
+    // 绑定 Tab 切换事件
+    var tabContainer = document.querySelector('.kriging-tabs');
+    if (tabContainer) {
+        tabContainer.addEventListener('click', function(e) {
+            var tab = e.target.closest('.kriging-tab');
+            if (!tab) return;
+
+            // 切换 tab 高亮
+            tabContainer.querySelectorAll('.kriging-tab').forEach(function(t) { t.classList.remove('active'); });
+            tab.classList.add('active');
+
+            // 切换内容
+            var target = tab.dataset.tab;
+            document.querySelectorAll('.kriging-tab-content').forEach(function(c) { c.classList.remove('active'); });
+            var contentEl = document.getElementById('krigingTab' + target.charAt(0).toUpperCase() + target.slice(1));
+            if (contentEl) contentEl.classList.add('active');
         });
     }
 
@@ -1358,34 +1376,43 @@ async function loadSessionParams() {
             }
 
             currentParams = params;
-            renderParamsUI();
+            // 渲染由 btnModelParams 点击触发，此处只保存数据
         }
     } catch (error) {
         console.error('加载参数失败:', error);
     }
 }
 
-// 渲染参数 UI
-function renderParamsUI() {
-    const container = document.getElementById('paramsContent');
-    const loading = document.getElementById('paramsLoading');
-    const applyBtn = document.getElementById('btnApplyParams');
-    if (!container || !loading) return;
+// 在右侧结果区域渲染建模参数页面
+function renderModelParamsPage() {
+    const resultsSection = document.getElementById('resultsSection');
+    if (!resultsSection) return;
 
-    loading.style.display = 'none';
-    container.style.display = 'block';
-    if (applyBtn) applyBtn.style.display = 'block';
+    // 隐藏钻孔模型容器
+    var drillContainer = document.getElementById('drillModelContainer');
+    if (drillContainer) drillContainer.style.display = 'none';
+
+    // 检查是否有参数元数据
+    if (!currentParamsMeta || Object.keys(currentParamsMeta).length === 0) {
+        resultsSection.innerHTML = `
+            <div class="model-params-page">
+                <h2>⚙️ 建模参数</h2>
+                <p style="color:#999;text-align:center;padding:40px 0;">请先上传数据文件</p>
+            </div>
+        `;
+        return;
+    }
 
     // 按 group 分组
     const groups = {};
-    const groupOrder = ['RBF 插值参数', '克里金参数', '建模参数', '钻孔显示参数'];
+    const groupOrder = ['建模参数', '钻孔显示参数'];
     for (const [key, meta] of Object.entries(currentParamsMeta)) {
         const g = meta.group || '';
         if (!groups[g]) groups[g] = [];
         groups[g].push({ key, meta });
     }
 
-    let html = '';
+    let html = `<div class="model-params-page"><h2>⚙️ 建模参数</h2>`;
     // 先渲染有 group 的（按 groupOrder 排序），再渲染无 group 的
     const renderedGroups = new Set();
     for (const groupName of groupOrder) {
@@ -1408,7 +1435,13 @@ function renderParamsUI() {
             html += renderParamItem(key, meta, value);
         }
     }
-    container.innerHTML = html;
+    // 应用按钮 + 提示
+    html += `<button class="btn btn-primary params-apply-btn" id="btnApplyParamsRight">应用参数</button>`;
+    html += `<div class="params-hint" id="paramsHintRight"></div>`;
+    html += `</div>`;
+
+    resultsSection.innerHTML = html;
+    resultsSection.classList.add('visible');
 
     // 绑定事件
     for (const key of Object.keys(currentParamsMeta)) {
@@ -1435,13 +1468,20 @@ function renderParamsUI() {
                     input.disabled = isAuto;
                 });
                 // 初始化
-                if (value === null || value === undefined) {
+                const currentVal = currentParams[key] !== undefined ? currentParams[key] : meta.default;
+                if (currentVal === null || currentVal === undefined) {
                     autoCheck.checked = true;
                     slider.disabled = true;
                     input.disabled = true;
                 }
             }
         }
+    }
+
+    // 绑定应用按钮
+    const applyBtn = document.getElementById('btnApplyParamsRight');
+    if (applyBtn) {
+        applyBtn.addEventListener('click', applyParamsRight);
     }
 }
 
@@ -1511,7 +1551,7 @@ function collectParamsFromUI() {
     return params;
 }
 
-// 应用参数
+// 应用参数（旧版，保留用于兼容）
 async function applyParams() {
     if (!sessionId) {
         setStatus('!!! 请先上传文件', 'error');
@@ -1546,40 +1586,63 @@ async function applyParams() {
             hint.textContent = '参数已应用，下次生成时生效';
             hint.style.color = '#2E7D32';
         }
-
-        // 收起面板
-        setTimeout(() => {
-            document.getElementById('paramsBody').style.display = 'none';
-            document.getElementById('paramsToggle').textContent = '▶';
-        }, 800);
-
     } catch (error) {
         setStatus('!!! 参数保存失败: ' + error.message, 'error');
     }
 }
 
-// 绑定折叠面板事件
-function initParamsPanel() {
-    const header = document.getElementById('paramsHeader');
-    const body = document.getElementById('paramsBody');
-    const toggle = document.getElementById('paramsToggle');
-    const applyBtn = document.getElementById('btnApplyParams');
+// 右侧参数页面的应用按钮
+async function applyParamsRight() {
+    if (!sessionId) {
+        setStatus('!!! 请先上传文件', 'error');
+        return;
+    }
 
-    if (!header || !body || !toggle) return;
+    const params = collectParamsFromUI();
+    const hint = document.getElementById('paramsHintRight');
 
-    header.addEventListener('click', () => {
-        const isHidden = body.style.display === 'none';
-        body.style.display = isHidden ? 'block' : 'none';
-        toggle.textContent = isHidden ? '▼' : '▶';
+    try {
+        const response = await fetch('/api/save_params', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ session_id: sessionId, params: params })
+        });
+        const data = await response.json();
 
-        // 首次展开时加载参数
-        if (isHidden && Object.keys(currentParamsMeta).length === 0 && sessionId) {
-            loadSessionParams();
+        if (data.error) {
+            setStatus('!!! 参数保存失败: ' + data.error, 'error');
+            if (hint) hint.textContent = '保存失败: ' + data.error;
+            return;
         }
-    });
 
-    if (applyBtn) {
-        applyBtn.addEventListener('click', applyParams);
+        currentParams = data.params;
+        savedParamsHash = data.params_hash;
+
+        // 保存到 localStorage
+        localStorage.setItem(`params_${sessionId}`, JSON.stringify(params));
+
+        setStatus('==> 参数已应用，下次生成时生效', 'success');
+        if (hint) {
+            hint.textContent = '✓ 参数已应用，下次生成时生效';
+            hint.style.color = '#2E7D32';
+        }
+    } catch (error) {
+        setStatus('!!! 参数保存失败: ' + error.message, 'error');
+    }
+}
+
+// 建模参数按钮 — 在右侧结果区域展示参数页面
+function initModelParamsButton() {
+    if (btnModelParams) {
+        btnModelParams.addEventListener('click', function() {
+            if (!sessionId) {
+                setStatus('!!! 请先上传文件', 'error');
+                return;
+            }
+            currentAnalysisMode = null;
+            renderModelParamsPage();
+            setStatus('==> 建模参数页面已打开', 'info');
+        });
     }
 }
 
@@ -1758,8 +1821,124 @@ if (btnAnalyzeRBF) {
             // 渲染结果
             renderRBFAnalysisResults(data);
             updateButtonStates();
-            showResultTabs();
+            hideResultTabs();
             setStatus('==> RBF 参数分析完成', 'success');
+            if (timer) timer.stop();
+
+        } catch (error) {
+            stopLogPolling();
+            clearInterval(progressInterval);
+            setStatus('!!! 分析失败: ' + error.message, 'error');
+            if (timer) timer.stop();
+        }
+    });
+}
+
+// ==================== 克里金参数分析 ====================
+const btnAnalyzeKriging = document.getElementById('btnAnalyzeKriging');
+if (btnAnalyzeKriging) {
+    btnAnalyzeKriging.addEventListener('click', async function() {
+        if (!sessionId || !filePath) {
+            setStatus('!!! 请先上传文件', 'error');
+            return;
+        }
+
+        // 1. 获取岩性列表
+        var layers = [];
+        try {
+            const layerResp = await fetch('/api/layers_list', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ path: filePath })
+            });
+            const layerData = await layerResp.json();
+            if (layerData.success) {
+                layers = layerData.layers;
+            }
+        } catch (e) {
+            console.warn('获取岩性列表失败:', e);
+        }
+
+        // 2. 弹窗让用户选择分析对象
+        var options = ['整体（所有岩性层合并）'];
+        for (var li = 0; li < layers.length; li++) {
+            options.push(layers[li]);
+        }
+        var targetLayer = await showLayerSelectModal(options);
+        if (!targetLayer) return;
+
+        // 隐藏钻孔模型容器
+        var drillContainer = document.getElementById('drillModelContainer');
+        if (drillContainer) drillContainer.style.display = 'none';
+
+        var resultsSection = document.getElementById('resultsSection');
+        if (resultsSection) {
+            resultsSection.innerHTML = '';
+            resultsSection.classList.remove('visible');
+        }
+
+        // 3. 开始分析
+        startLogPolling(sessionId);
+        setStatus('正在进行克里金参数分析...', 'loading');
+        var timer = startButtonTimer(btnAnalyzeKriging, '参数分析中');
+
+        // 4. 显示进度条
+        if (resultsSection) {
+            resultsSection.innerHTML = [
+                '<div class="analysis-progress">',
+                '   <h3>📊 克里金参数分析进行中</h3>',
+                '   <div class="progress-bar-wrap">',
+                '       <div class="progress-bar-fill" id="krigingParamProgressFill" style="width: 0%;"></div>',
+                '   </div>',
+                '   <p id="krigingParamProgressText">准备中...</p>',
+                '</div>'
+            ].join('');
+            resultsSection.classList.add('visible');
+        }
+
+        // 5. 假进度
+        var fakeProgress = 0;
+        var progressInterval = setInterval(function() {
+            fakeProgress += 10;
+            if (fakeProgress > 90) fakeProgress = 90;
+            var fill = document.getElementById('krigingParamProgressFill');
+            var text = document.getElementById('krigingParamProgressText');
+            if (fill) fill.style.width = fakeProgress + '%';
+            if (text) text.textContent = '正在计算...（约 ' + fakeProgress + '%）';
+        }, 800);
+
+        try {
+            var response = await fetch('/api/analyze_kriging_params', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    session_id: sessionId,
+                    path: filePath,
+                    target_layer: targetLayer
+                })
+            });
+            var data = await response.json();
+            stopLogPolling();
+
+            clearInterval(progressInterval);
+
+            if (data.error) {
+                setStatus('!!! ' + data.error, 'error');
+                if (timer) timer.stop();
+                if (resultsSection) {
+                    resultsSection.innerHTML = '<p style="color:#c62828;text-align:center;padding:40px;">分析失败: ' + data.error + '</p>';
+                }
+                if (drillContainer) drillContainer.style.display = 'flex';
+                return;
+            }
+
+            var fill = document.getElementById('krigingParamProgressFill');
+            if (fill) fill.style.width = '100%';
+
+            renderKrigingParamResults(data);
+            updateButtonStates();
+            hideResultTabs();
+            setStatus('==> 克里金参数分析完成', 'success');
             if (timer) timer.stop();
 
         } catch (error) {
@@ -1865,7 +2044,8 @@ function renderKrigingSurfaceResults(data) {
     resultsSection.innerHTML = '';
     resultsSection.classList.add('visible');
 
-    var html = '<h2>📊 克里金曲面数值分析结果</h2>';
+    var html = '<div class="surface-results-wrapper">';
+    html += '<h2>📊 克里金曲面数值分析结果</h2>';
     html += '<p style="color:#666;font-size:13px;margin-bottom:8px;">';
     html += '变异函数模型: <b>' + data.variogram_model + '</b> ｜ ';
     html += '分析图层数: <b>' + data.analysis_count + '</b>';
@@ -1896,26 +2076,23 @@ function renderKrigingSurfaceResults(data) {
             html += '</div>';
         }
 
-        html += '<div class="uniform-grid">';
+        html += '<div class="surface-grid">';
         if (layer.top_url) {
-            html += '<div class="uniform-card">';
-            html += '<div class="card-img-wrapper" style="cursor:pointer;" onclick="openFullscreen(\'' + layer.top_url + '\')">';
-            html += '<img src="' + layer.top_url + '?t=' + Date.now() + '" alt="' + layer.layer_name + ' 顶面" style="width:100%;max-height:400px;object-fit:contain;background:#f8f9fc;display:block;">';
-            html += '</div>';
-            html += '<div class="card-title">顶面分析</div>';
+            html += '<div class="surface-card">';
+            html += '<img src="' + layer.top_url + '?t=' + Date.now() + '" alt="' + layer.layer_name + ' 顶面" onclick="openFullscreen(\'' + layer.top_url + '\')" style="cursor:pointer;width:100%;max-height:420px;object-fit:contain;background:#f8f9fc;display:block;">';
+            html += '<div class="surface-card-title">顶面分析</div>';
             html += '</div>';
         }
         if (layer.bot_url) {
-            html += '<div class="uniform-card">';
-            html += '<div class="card-img-wrapper" style="cursor:pointer;" onclick="openFullscreen(\'' + layer.bot_url + '\')">';
-            html += '<img src="' + layer.bot_url + '?t=' + Date.now() + '" alt="' + layer.layer_name + ' 底面" style="width:100%;max-height:400px;object-fit:contain;background:#f8f9fc;display:block;">';
-            html += '</div>';
-            html += '<div class="card-title">底面分析</div>';
+            html += '<div class="surface-card">';
+            html += '<img src="' + layer.bot_url + '?t=' + Date.now() + '" alt="' + layer.layer_name + ' 底面" onclick="openFullscreen(\'' + layer.bot_url + '\')" style="cursor:pointer;width:100%;max-height:420px;object-fit:contain;background:#f8f9fc;display:block;">';
+            html += '<div class="surface-card-title">底面分析</div>';
             html += '</div>';
         }
         html += '</div></div>';
     }
 
+    html += '</div>'; // surface-results-wrapper
     resultsSection.innerHTML = html;
 }
 
@@ -2255,6 +2432,470 @@ function copyBestParams(best) {
 }
 
 /** 隐藏结果区的 tabs（仅展示钻孔计算器等内容时） */
+// ==================== 克里金参数分析结果渲染 ====================
+function renderKrigingParamResults(data) {
+    var resultsSection = document.getElementById('resultsSection');
+    resultsSection.innerHTML = '';
+    resultsSection.classList.add('visible');
+
+    var analysisKeys = Object.keys(data.analysis || {});
+    if (analysisKeys.length === 0) {
+        resultsSection.innerHTML = '<div class="kriging-results-wrapper"><p style="text-align:center;padding:40px;color:#666;">无分析结果</p></div>';
+        return;
+    }
+
+    var key = analysisKeys[0];
+    var result = data.analysis[key];
+
+    if (!result.success) {
+        resultsSection.innerHTML = '<div class="kriging-results-wrapper"><p style="color:#c62828;text-align:center;padding:40px;">分析失败: ' + (result.error || '未知错误') + '</p></div>';
+        return;
+    }
+
+    var best = result.best;
+    var allResults = result.all_results;
+    var standards = data.standards;
+    var nrStandards = data.nugget_ratio_standards || [];
+    var r2Standards = data.r2_standards || [];
+
+    if (!best || !allResults || allResults.length === 0) {
+        resultsSection.innerHTML = '<div class="kriging-results-wrapper"><p style="text-align:center;padding:40px;color:#666;">无有效的参数组合结果</p></div>';
+        return;
+    }
+
+    // 判断最优 RMSE 属于哪个标准
+    var currentStd = standards[standards.length - 1];
+    for (var si = 0; si < standards.length; si++) {
+        if (best.rmse < standards[si].max) {
+            currentStd = standards[si];
+            break;
+        }
+    }
+
+    // 判断最优 nugget_ratio 和 R² 标准
+    var bestNrStd = null;
+    if (best.nugget_ratio != null && nrStandards.length > 0) {
+        bestNrStd = nrStandards[nrStandards.length - 1];
+        for (var nri = 0; nri < nrStandards.length; nri++) {
+            if (best.nugget_ratio <= nrStandards[nri].max) { bestNrStd = nrStandards[nri]; break; }
+        }
+    }
+    var bestR2Std = null;
+    if (best.r_squared != null && r2Standards.length > 0) {
+        bestR2Std = r2Standards[r2Standards.length - 1];
+        for (var r2i = 0; r2i < r2Standards.length; r2i++) {
+            if (best.r_squared >= r2Standards[r2i].min) { bestR2Std = r2Standards[r2i]; break; }
+        }
+    }
+
+    var targetLabel = key === 'all' ? '整体数据集' : key;
+
+    var html = '<div class="kriging-results-wrapper">';
+    html += '<h2 style="margin-bottom:8px;">📊 克里金参数分析结果</h2>';
+    html += '<p style="color:#666;font-size:13px;margin-bottom:16px;">分析范围: <b>' + targetLabel + '</b></p>';
+
+    // ========== 推荐参数卡片（含新参数） ==========
+    html += '<div class="best-param-card">';
+    html += '   <div class="best-badge">✨ 推荐参数</div>';
+    html += '   <div class="best-param-content">';
+    html += '       <div class="best-param-row"><span class="label">变异函数模型：</span><span class="value">' + best.variogram_model + '</span></div>';
+    html += '       <div class="best-param-row">';
+    html += '           <span class="label">预期误差 (RMSE)：</span>';
+    html += '           <span class="value" style="color:' + currentStd.color + ';font-size:18px;">';
+    html += best.rmse.toFixed(2) + ' m';
+    html += '               <span class="rmse-tag" style="background:' + currentStd.color + '">' + currentStd.label + '</span>';
+    html += '           </span>';
+    html += '       </div>';
+    html += '       <div class="best-param-row"><span class="label">MAE：</span><span class="value">' + best.mae.toFixed(2) + ' m</span></div>';
+    html += '       <div class="best-param-row"><span class="label">最大误差：</span><span class="value">' + best.max_error.toFixed(2) + ' m</span></div>';
+    // 新增：块金值、基台值、块基比、变程、R²
+    if (best.nugget != null) {
+        html += '       <div class="best-param-row"><span class="label">块金值 (Nugget)：</span><span class="value">' + best.nugget.toFixed(2) + '</span></div>';
+    }
+    if (best.sill != null) {
+        html += '       <div class="best-param-row"><span class="label">基台值 (Sill)：</span><span class="value">' + best.sill.toFixed(2) + '</span></div>';
+    }
+    if (best.nugget_ratio != null) {
+        var nrColor = bestNrStd ? bestNrStd.color : '#333';
+        html += '       <div class="best-param-row"><span class="label">块基比 (C₀/(C₀+C))：</span>';
+        html += '           <span class="value" style="color:' + nrColor + ';">' + (best.nugget_ratio * 100).toFixed(1) + '%';
+        if (bestNrStd) html += ' <span class="rmse-tag" style="background:' + nrColor + '">' + bestNrStd.label + '</span>';
+        html += '           </span></div>';
+    }
+    if (best.range != null) {
+        html += '       <div class="best-param-row"><span class="label">变程 (Range)：</span><span class="value">' + best.range.toFixed(2) + '</span></div>';
+    }
+    if (best.r_squared != null) {
+        var r2Color = bestR2Std ? bestR2Std.color : '#333';
+        html += '       <div class="best-param-row"><span class="label">R²：</span>';
+        html += '           <span class="value" style="color:' + r2Color + ';">' + best.r_squared.toFixed(4);
+        if (bestR2Std) html += ' <span class="rmse-tag" style="background:' + r2Color + '">' + bestR2Std.label + '</span>';
+        html += '           </span></div>';
+    }
+    html += '       <div class="best-param-row"><span class="label">建议：</span><span class="value">' + currentStd.suggestion + '</span></div>';
+    html += '   </div>';
+    html += '   <div class="best-param-actions">';
+    html += '       <button class="btn btn-primary" id="btnApplyKrigingBestParams">✅ 应用此参数到当前会话</button>';
+    html += '       <button class="btn" id="btnCopyKrigingBestParams">📋 复制参数</button>';
+    html += '   </div>';
+    html += '</div>';
+
+    // ========== 关键参数对比图区 ==========
+    html += '<div class="analysis-block">';
+    html += '   <h3>📊 各变异函数关键参数对比</h3>';
+    html += '   <div id="krigingParamChart" class="rbf-heatmap-container" style="height:300px;"></div>';
+    html += '</div>';
+
+    // 新增：块基比柱状图 + R² 柱状图
+    html += '<div class="analysis-block chart-row">';
+    html += '   <div class="chart-col">';
+    html += '       <h4>🔵 块基比 (Nugget/Sill Ratio)</h4>';
+    html += '       <div id="krigingNuggetRatioChart" class="rbf-heatmap-container" style="height:250px;"></div>';
+    html += '   </div>';
+    html += '   <div class="chart-col">';
+    html += '       <h4>🟢 R² 对比</h4>';
+    html += '       <div id="krigingR2Chart" class="rbf-heatmap-container" style="height:250px;"></div>';
+    html += '   </div>';
+    html += '</div>';
+
+    // ========== 参数表格（含新列） ==========
+    var sorted = allResults.slice().sort(function(a, b) { return a.rmse - b.rmse; });
+
+    html += '<div class="analysis-block">';
+    html += '   <h3>📋 模型明细（按 RMSE 升序）</h3>';
+    html += '   <div class="table-scrollable">';
+    html += '   <table class="report-table"><thead><tr>';
+    html += '       <th>排名</th><th>变异函数模型</th><th>RMSE(m)</th><th>MAE(m)</th><th>最大误差(m)</th><th>块金值</th><th>基台值</th><th>块基比</th><th>变程</th><th>R²</th><th>评价</th>';
+    html += '   </tr></thead><tbody>';
+
+    for (var ri = 0; ri < sorted.length; ri++) {
+        var r = sorted[ri];
+        var std = standards[standards.length - 1];
+        for (var sj = 0; sj < standards.length; sj++) {
+            if (r.rmse < standards[sj].max) { std = standards[sj]; break; }
+        }
+        html += '<tr>';
+        html += '   <td>' + (ri + 1) + '</td>';
+        html += '   <td>' + r.variogram_model + '</td>';
+        html += '   <td><b>' + r.rmse.toFixed(2) + '</b></td>';
+        html += '   <td>' + (r.mae !== undefined ? r.mae.toFixed(2) : '-') + '</td>';
+        html += '   <td>' + (r.max_error !== undefined ? r.max_error.toFixed(2) : '-') + '</td>';
+        html += '   <td>' + (r.nugget != null ? r.nugget.toFixed(2) : '-') + '</td>';
+        html += '   <td>' + (r.sill != null ? r.sill.toFixed(2) : '-') + '</td>';
+        html += '   <td>' + (r.nugget_ratio != null ? (r.nugget_ratio * 100).toFixed(1) + '%' : '-') + '</td>';
+        html += '   <td>' + (r.range != null ? r.range.toFixed(2) : '-') + '</td>';
+        html += '   <td>' + (r.r_squared != null ? r.r_squared.toFixed(4) : '-') + '</td>';
+        html += '   <td style="color:' + std.color + '">' + std.label + '</td>';
+        html += '</tr>';
+    }
+    html += '</tbody></table></div></div>';
+
+    // ========== 关键参数参考标准 ==========
+    html += '<div class="analysis-block">';
+    html += '   <h3>📖 关键参数参考标准</h3>';
+
+    // RMSE 标准
+    html += '   <h4 style="margin:12px 0 6px;font-size:14px;">📏 RMSE 评价标准</h4>';
+    html += '   <table class="report-table standards-table"><thead><tr>';
+    html += '       <th>RMSE 范围</th><th>评价</th><th>建议</th>';
+    html += '   </tr></thead><tbody>';
+    for (var si2 = 0; si2 < standards.length; si2++) {
+        var st = standards[si2];
+        var isCurrent = (st === currentStd);
+        var rangeText = st.max >= 99999
+            ? '> ' + standards[standards.length - 2].max + ' m'
+            : '< ' + st.max + ' m';
+        var rowStyle = isCurrent ? 'background:' + st.color + '22;font-weight:bold;' : '';
+        html += '<tr class="' + (isCurrent ? 'current-standard' : '') + '" style="' + rowStyle + '">';
+        html += '   <td>' + rangeText + '</td>';
+        html += '   <td style="color:' + st.color + '">' + st.label + '</td>';
+        html += '   <td>' + st.suggestion + (isCurrent ? ' ← 当前结果' : '') + '</td>';
+        html += '</tr>';
+    }
+    html += '</tbody></table>';
+
+    // 块基比标准
+    if (nrStandards.length > 0) {
+        html += '   <h4 style="margin:12px 0 6px;font-size:14px;">🔵 块基比 (C₀/(C₀+C)) 评价标准</h4>';
+        html += '   <table class="report-table standards-table"><thead><tr>';
+        html += '       <th>块基比范围</th><th>评价</th><th>说明</th>';
+        html += '   </tr></thead><tbody>';
+        for (var nri2 = 0; nri2 < nrStandards.length; nri2++) {
+            var nrst = nrStandards[nri2];
+            var isNrCurrent = (nrst === bestNrStd);
+            var nrRangeText = nrst.max >= 99999
+                ? '> ' + (nrStandards[nrStandards.length - 2].max * 100).toFixed(0) + '%'
+                : '< ' + (nrst.max * 100).toFixed(0) + '%';
+            var nrRowStyle = isNrCurrent ? 'background:' + nrst.color + '22;font-weight:bold;' : '';
+            html += '<tr style="' + nrRowStyle + '">';
+            html += '   <td>' + nrRangeText + '</td>';
+            html += '   <td style="color:' + nrst.color + '">' + nrst.label + '</td>';
+            html += '   <td>' + nrst.description + (isNrCurrent ? ' ← 当前结果' : '') + '</td>';
+            html += '</tr>';
+        }
+        html += '</tbody></table>';
+    }
+
+    // R² 标准
+    if (r2Standards.length > 0) {
+        html += '   <h4 style="margin:12px 0 6px;font-size:14px;">🟢 R² 评价标准</h4>';
+        html += '   <table class="report-table standards-table"><thead><tr>';
+        html += '       <th>R² 范围</th><th>评价</th><th>说明</th>';
+        html += '   </tr></thead><tbody>';
+        for (var r2i2 = 0; r2i2 < r2Standards.length; r2i2++) {
+            var r2st = r2Standards[r2i2];
+            var isR2Current = (r2st === bestR2Std);
+            // R² 越高越好，使用 min 阈值
+            var r2RangeText = r2st.min <= -9999
+                ? '< ' + r2Standards[r2Standards.length - 2].min.toFixed(1)
+                : '≥ ' + r2st.min.toFixed(1);
+            var r2RowStyle = isR2Current ? 'background:' + r2st.color + '22;font-weight:bold;' : '';
+            html += '<tr style="' + r2RowStyle + '">';
+            html += '   <td>' + r2RangeText + '</td>';
+            html += '   <td style="color:' + r2st.color + '">' + r2st.label + '</td>';
+            html += '   <td>' + r2st.description + (isR2Current ? ' ← 当前结果' : '') + '</td>';
+            html += '</tr>';
+        }
+        html += '</tbody></table>';
+    }
+
+    html += '</div>'; // analysis-block
+    html += '</div>'; // kriging-results-wrapper
+
+    resultsSection.innerHTML = html;
+
+    // 渲染柱状图
+    setTimeout(function() {
+        drawKrigingParamChart(allResults);
+        drawKrigingNuggetRatioChart(allResults);
+        drawKrigingR2Chart(allResults);
+    }, 100);
+
+    var btnApply = document.getElementById('btnApplyKrigingBestParams');
+    if (btnApply) {
+        btnApply.addEventListener('click', function() { applyKrigingBestParams(best); });
+    }
+
+    var btnCopy = document.getElementById('btnCopyKrigingBestParams');
+    if (btnCopy) {
+        btnCopy.addEventListener('click', function() { copyKrigingBestParams(best); });
+    }
+}
+
+/**
+ * 绘制克里金参数分析的 RMSE 柱状图
+ */
+function drawKrigingParamChart(allResults) {
+    var sorted = allResults.slice().sort(function(a, b) { return a.rmse - b.rmse; });
+    var models = sorted.map(function(r) { return r.variogram_model; });
+    var rmses = sorted.map(function(r) { return r.rmse; });
+
+    var colors = [];
+    for (var ci = 0; ci < sorted.length; ci++) {
+        if (ci === 0) {
+            colors.push('#2E7D32'); // best = green
+        } else {
+            colors.push('#1565C0');
+        }
+    }
+
+    var trace = {
+        x: models,
+        y: rmses,
+        type: 'bar',
+        marker: { color: colors },
+        text: rmses.map(function(v) { return v.toFixed(2) + ' m'; }),
+        textposition: 'outside',
+        hovertemplate: '模型: %{x}<br>RMSE: %{y:.2f} m<extra></extra>'
+    };
+
+    var bestVal = rmses[0];
+    var worstVal = rmses[rmses.length - 1];
+    var layout = {
+        xaxis: { title: '变异函数模型' },
+        yaxis: { title: 'RMSE (m)' },
+        margin: { l: 60, r: 30, t: 10, b: 60 },
+        paper_bgcolor: 'rgba(0,0,0,0)',
+        plot_bgcolor: 'rgba(0,0,0,0)',
+        shapes: bestVal < worstVal ? [{
+            type: 'line',
+            x0: -0.5, x1: models.length - 0.5,
+            y0: bestVal, y1: bestVal,
+            line: { color: '#2E7D32', width: 2, dash: 'dot' }
+        }] : []
+    };
+
+    var chartDiv = document.getElementById('krigingParamChart');
+    if (chartDiv && typeof Plotly !== 'undefined') {
+        Plotly.newPlot(chartDiv, [trace], layout, { responsive: true });
+    }
+}
+
+/**
+ * 绘制块基比 (Nugget/Sill Ratio) 柱状图
+ */
+function drawKrigingNuggetRatioChart(allResults) {
+    var sorted = allResults.slice().sort(function(a, b) {
+        var ar = a.nugget_ratio !== undefined ? a.nugget_ratio : 0;
+        var br = b.nugget_ratio !== undefined ? b.nugget_ratio : 0;
+        return ar - br;
+    });
+    var models = sorted.map(function(r) { return r.variogram_model; });
+    var ratios = sorted.map(function(r) {
+        return r.nugget_ratio !== undefined ? r.nugget_ratio * 100 : null;
+    });
+
+    var colors = [];
+    for (var ci = 0; ci < sorted.length; ci++) {
+        var r = sorted[ci];
+        if (r.nugget_ratio === undefined || r.nugget_ratio === null) {
+            colors.push('#ccc');
+        } else if (r.nugget_ratio <= 0.25) {
+            colors.push('#2E7D32');
+        } else if (r.nugget_ratio <= 0.75) {
+            colors.push('#F57C00');
+        } else {
+            colors.push('#C62828');
+        }
+    }
+
+    var trace = {
+        x: models,
+        y: ratios,
+        type: 'bar',
+        marker: { color: colors },
+        text: ratios.map(function(v) { return v !== null ? v.toFixed(1) + '%' : 'N/A'; }),
+        textposition: 'outside',
+        hovertemplate: '模型: %{x}<br>块基比: %{y:.1f}%<extra></extra>'
+    };
+
+    var layout = {
+        xaxis: { title: '变异函数模型' },
+        yaxis: { title: '块基比 (%)', range: [0, 105] },
+        margin: { l: 50, r: 20, t: 10, b: 50 },
+        paper_bgcolor: 'rgba(0,0,0,0)',
+        plot_bgcolor: 'rgba(0,0,0,0)',
+        shapes: [
+            { type: 'line', x0: -0.5, x1: models.length - 0.5, y0: 25, y1: 25,
+              line: { color: '#F57C00', width: 1.5, dash: 'dash' } },
+            { type: 'line', x0: -0.5, x1: models.length - 0.5, y0: 75, y1: 75,
+              line: { color: '#C62828', width: 1.5, dash: 'dash' } }
+        ],
+        annotations: [
+            { x: models.length - 0.3, y: 25, text: '25% 中等', showarrow: false, font: { size: 10, color: '#F57C00' }, xanchor: 'left' },
+            { x: models.length - 0.3, y: 75, text: '75% 弱', showarrow: false, font: { size: 10, color: '#C62828' }, xanchor: 'left' }
+        ]
+    };
+
+    var chartDiv = document.getElementById('krigingNuggetRatioChart');
+    if (chartDiv && typeof Plotly !== 'undefined') {
+        Plotly.newPlot(chartDiv, [trace], layout, { responsive: true });
+    }
+}
+
+/**
+ * 绘制 R² 柱状图
+ */
+function drawKrigingR2Chart(allResults) {
+    var sorted = allResults.slice().sort(function(a, b) {
+        var ar = a.r_squared !== undefined ? a.r_squared : -1;
+        var br = b.r_squared !== undefined ? b.r_squared : -1;
+        return br - ar;
+    });
+    var models = sorted.map(function(r) { return r.variogram_model; });
+    var r2s = sorted.map(function(r) {
+        return r.r_squared !== undefined ? r.r_squared : null;
+    });
+
+    var colors = [];
+    for (var ci = 0; ci < sorted.length; ci++) {
+        var r = sorted[ci];
+        if (r.r_squared === undefined || r.r_squared === null) {
+            colors.push('#ccc');
+        } else if (r.r_squared >= 0.9) {
+            colors.push('#2E7D32');
+        } else if (r.r_squared >= 0.7) {
+            colors.push('#1565C0');
+        } else if (r.r_squared >= 0.5) {
+            colors.push('#F57C00');
+        } else {
+            colors.push('#C62828');
+        }
+    }
+
+    var trace = {
+        x: models,
+        y: r2s,
+        type: 'bar',
+        marker: { color: colors },
+        text: r2s.map(function(v) { return v !== null ? v.toFixed(4) : 'N/A'; }),
+        textposition: 'outside',
+        hovertemplate: '模型: %{x}<br>R²: %{y:.4f}<extra></extra>'
+    };
+
+    var layout = {
+        xaxis: { title: '变异函数模型' },
+        yaxis: { title: 'R²', range: [0, 1.1] },
+        margin: { l: 50, r: 20, t: 10, b: 50 },
+        paper_bgcolor: 'rgba(0,0,0,0)',
+        plot_bgcolor: 'rgba(0,0,0,0)',
+        shapes: [
+            { type: 'line', x0: -0.5, x1: models.length - 0.5, y0: 0.9, y1: 0.9,
+              line: { color: '#2E7D32', width: 1.5, dash: 'dash' } },
+            { type: 'line', x0: -0.5, x1: models.length - 0.5, y0: 0.7, y1: 0.7,
+              line: { color: '#1565C0', width: 1.5, dash: 'dash' } },
+            { type: 'line', x0: -0.5, x1: models.length - 0.5, y0: 0.5, y1: 0.5,
+              line: { color: '#F57C00', width: 1.5, dash: 'dash' } }
+        ]
+    };
+
+    var chartDiv = document.getElementById('krigingR2Chart');
+    if (chartDiv && typeof Plotly !== 'undefined') {
+        Plotly.newPlot(chartDiv, [trace], layout, { responsive: true });
+    }
+}
+
+/**
+ * 应用推荐参数到当前会话
+ */
+function applyKrigingBestParams(best) {
+    if (!best) return;
+
+    if (typeof currentParams !== 'object') {
+        currentParams = {};
+    }
+    currentParams.KRIGING_VARIOGRAM = best.variogram_model;
+
+    var el = document.getElementById('param_KRIGING_VARIOGRAM');
+    if (el) el.value = best.variogram_model;
+
+    setStatus('==> 推荐参数已应用到当前会话（下次生成时生效）', 'success');
+
+    setTimeout(function() {
+        var hint = document.getElementById('paramsHint');
+        if (hint) {
+            hint.textContent = '已从参数分析应用克里金变异函数模型: ' + best.variogram_model;
+            hint.style.color = '#2E7D32';
+        }
+    }, 300);
+}
+
+/**
+ * 复制推荐参数到剪贴板
+ */
+function copyKrigingBestParams(best) {
+    var text = '变异函数模型: ' + best.variogram_model +
+               '\n预期误差 (RMSE): ' + best.rmse.toFixed(2) + ' m' +
+               '\nMAE: ' + best.mae.toFixed(2) + ' m' +
+               '\n最大误差: ' + best.max_error.toFixed(2) + ' m';
+
+    navigator.clipboard.writeText(text).then(function() {
+        setStatus('==> 参数已复制到剪贴板', 'success');
+    }).catch(function() {
+        prompt('请手动复制：', text);
+    });
+}
+
 function hideResultTabs() {
     var tabs = document.getElementById('resultTabs');
     if (tabs) tabs.style.display = 'none';
@@ -2603,7 +3244,7 @@ async function exportAnalysisData() {
 // ==================== 初始化 ====================
 document.addEventListener('DOMContentLoaded', function() {
     loadTemplateData();
-    initParamsPanel();
+    initModelParamsButton();
     initResultTabs();
     setStatus('已加载模板数据，可查看下方预览', 'info');
 });
@@ -2961,15 +3602,6 @@ removeFileBtn.addEventListener('click', () => {
     currentParams = {};
     currentParamsMeta = {};
     savedParamsHash = '';
-    const paramsContent = document.getElementById('paramsContent');
-    if (paramsContent) paramsContent.innerHTML = '';
-    const paramsLoading = document.getElementById('paramsLoading');
-    if (paramsLoading) {
-        paramsLoading.style.display = 'block';
-        paramsLoading.textContent = '请先上传文件，展开后加载参数...';
-    }
-    const applyBtn = document.getElementById('btnApplyParams');
-    if (applyBtn) applyBtn.style.display = 'none';
 
     setStatus('等待上传文件...', 'info');
 });
@@ -3018,10 +3650,8 @@ function stopLogPolling() {
         logInterval = null;
     }
     isProcessing = false;
-    // 保留最后一条消息作为摘要
+    // 保留所有日志行，仅切换回普通状态样式
     const statusDiv = document.getElementById('statusMessage');
-    const lastMsg = statusDiv.lastChild ? statusDiv.lastChild.textContent : '处理完成';
-    statusDiv.innerHTML = lastMsg;
     statusDiv.className = 'status-message success';
 }
 
@@ -3030,10 +3660,10 @@ function appendLogMessage(msg, type) {
     const line = document.createElement('div');
     line.textContent = msg;
     line.className = 'log-line';
-    if (type === 'error') line.style.color = '#c62828';
-    else if (type === 'success') line.style.color = '#2E7D32';
-    else if (type === 'warning') line.style.color = '#f57f17';
-    else line.style.color = '#333';
+    if (type === 'error') line.style.color = '#f44747';
+    else if (type === 'success') line.style.color = '#6a9955';
+    else if (type === 'warning') line.style.color = '#dcdcaa';
+    else line.style.color = '#d4d4d4';
     statusDiv.appendChild(line);
     // 自动滚动到底部
     const container = statusDiv.parentElement;
@@ -3217,18 +3847,6 @@ function resetToInitialState() {
             '</div><div id="resultsContent"></div>';
         resultsSection.style.display = '';
     }
-
-    // 重置参数面板
-    var paramsBody = document.getElementById('paramsBody');
-    var paramsContent = document.getElementById('paramsContent');
-    var paramsLoading = document.getElementById('paramsLoading');
-    var btnApplyParams = document.getElementById('btnApplyParams');
-    var paramsHint = document.getElementById('paramsHint');
-    if (paramsBody) paramsBody.style.display = 'none';
-    if (paramsContent) paramsContent.style.display = 'none';
-    if (paramsLoading) paramsLoading.style.display = 'block';
-    if (btnApplyParams) btnApplyParams.style.display = 'none';
-    if (paramsHint) paramsHint.textContent = '';
 
     // 隐藏结果 tab
     var resultTabs = document.getElementById('resultTabs');

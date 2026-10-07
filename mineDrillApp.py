@@ -457,8 +457,11 @@ def generate_model_api():
         n_layers = user_params.get('N_LAYERS', N_LAYERS)
         drill_style = user_params.get('DRILL_STYLE', DRILL_STYLE)
         drill_radius = user_params.get('DRILL_RADIUS', DRILL_RADIUS)
+        # 读取插值方法
+        interpolation_method = user_params.get('INTERPOLATION_METHOD', INTERPOLATION_METHOD)
+        kriging_variogram = user_params.get('KRIGING_VARIOGRAM', KRIGING_VARIOGRAM_MODEL)
 
-        log_and_print(session_id, f"==> 用户参数: RBF={rbf_function}, 平滑度={rbf_smooth}, 网格={grid_resolution}, 层数={n_layers}, 钻孔样式={drill_style}, 半径={drill_radius}")
+        log_and_print(session_id, f"==> 用户参数: 方法={interpolation_method}, RBF={rbf_function}, 平滑度={rbf_smooth}, 克里金变异函数={kriging_variogram}, 网格={grid_resolution}, 层数={n_layers}, 钻孔样式={drill_style}, 半径={drill_radius}")
         # =============================
 
         # ========== 缓存查询 ==========
@@ -468,7 +471,9 @@ def generate_model_api():
         input_hash = None
         if CACHE_ENABLED:
             input_hash = compute_file_hash(file_path)
-            cached = get_cached_result(session_id, 'model', input_hash, params_hash)
+            # 缓存键包含 method 标识，确保不同插值方法的缓存不冲突
+            cache_model_key = 'model' + (f'_{interpolation_method}' if interpolation_method != 'rbf' else '')
+            cached = get_cached_result(session_id, cache_model_key, input_hash, params_hash)
             if cached:
                 log_and_print(session_id, "==> 命中缓存，直接返回建模结果")
                 # 修正缓存的 URL 路径
@@ -501,7 +506,9 @@ def generate_model_api():
             rbf_function=rbf_function,
             rbf_smooth=rbf_smooth,
             grid_resolution=grid_resolution,
-            session_id=session_id
+            session_id=session_id,
+            method=interpolation_method,
+            kriging_variogram=kriging_variogram
         )
 
         if not bodies or not volume_data:
@@ -597,7 +604,7 @@ def generate_model_api():
         }
 
         if CACHE_ENABLED and input_hash:
-            save_cached_result(session_id, 'model', input_hash, result_data, output_dir, params_hash)
+            save_cached_result(session_id, cache_model_key, input_hash, result_data, output_dir, params_hash)
             log_and_print(session_id, "==> 已保存建模结果到缓存")
         # =============================
 
@@ -626,6 +633,174 @@ def generate_model_api():
             'error': str(e),
             'detail': error_detail
         }), 500
+
+
+@app.route('/api/analyze_kriging_params', methods=['POST'])
+def analyze_kriging_params_api():
+    """
+    克里金参数分析：遍历变异函数模型，输出最优参数。
+    请求: { session_id, path, target_layer? }
+    """
+    data = request.json
+    session_id = data.get('session_id')
+    file_path = data.get('path')
+    target_layer = data.get('target_layer', 'all')
+
+    if not session_id or not file_path:
+        return jsonify({'error': '缺少必要参数'}), 400
+
+    if not os.path.exists(file_path):
+        return jsonify({'error': '文件不存在'}), 400
+
+    try:
+        from config import (
+            CACHE_ENABLED, KRIGING_ANALYSIS_CACHE_TYPE, KRIGING_RMSE_STANDARDS,
+            KRIGING_NUGGET_RATIO_STANDARDS, KRIGING_R2_STANDARDS
+        )
+        from cache_manager import (
+            compute_file_hash, get_cached_result, save_cached_result
+        )
+        from params_manager import load_session_params, compute_params_hash
+        from processors import optimize_kriging_params
+
+        # 读取用户参数
+        user_params = load_session_params(session_id)
+        params_hash = compute_params_hash(user_params)
+
+        # 缓存键
+        cache_extra = f'_{target_layer}' if target_layer != 'all' else ''
+
+        # 缓存查询
+        input_hash = None
+        if CACHE_ENABLED:
+            input_hash = compute_file_hash(file_path)
+            cached = get_cached_result(
+                session_id, KRIGING_ANALYSIS_CACHE_TYPE,
+                input_hash + cache_extra, params_hash
+            )
+            if cached:
+                log_and_print(session_id, "==> 命中克里金参数分析缓存")
+                return jsonify({
+                    'success': True,
+                    'from_cache': True,
+                    **cached['result']
+                })
+
+        # 读取数据
+        loc_df = pd.read_excel(file_path, sheet_name='定位表')
+        survey_df = pd.read_excel(file_path, sheet_name='测斜表')
+        litho_df = pd.read_excel(file_path, sheet_name='岩性表')
+
+        # 提取控制点（与 RBF 分析相同的逻辑）
+        hole_coords = {}
+        for _, row in loc_df.iterrows():
+            hid = row['钻孔编号']
+            hole_coords[hid] = (row['开孔坐标E'], row['开孔坐标N'], row['开孔高程R'])
+
+        traj_cache = {}
+        for hid in loc_df['钻孔编号']:
+            surv = survey_df[survey_df['钻孔编号'] == hid]
+            if len(surv) > 0:
+                lengths, xs, ys, zs = compute_trajectory(surv)
+                traj_cache[hid] = {'lengths': lengths, 'xs': xs, 'ys': ys, 'zs': zs}
+
+        litho_groups = {}
+        for _, seg in litho_df.iterrows():
+            hid = seg['钻孔编号']
+            d_top = seg['上层位长度起始刻度']
+            d_bot = seg['下层位长度起始刻度']
+            lith = seg['岩性描述']
+
+            if hid not in hole_coords or hid not in traj_cache:
+                continue
+
+            e0, n0, z0 = hole_coords[hid]
+            traj = traj_cache[hid]
+
+            x_top, y_top, z_top = get_interpolated_coords(
+                traj['lengths'], traj['xs'], traj['ys'], traj['zs'], [d_top])
+            x_bot, y_bot, z_bot = get_interpolated_coords(
+                traj['lengths'], traj['xs'], traj['ys'], traj['zs'], [d_bot])
+
+            x_top, y_top = x_top[0] + e0, y_top[0] + n0
+            x_bot, y_bot = x_bot[0] + e0, y_bot[0] + n0
+            z_top, z_bot = z_top[0] + z0, z_bot[0] + z0
+
+            if lith not in litho_groups:
+                litho_groups[lith] = {'top': [], 'bottom': []}
+            litho_groups[lith]['top'].append((x_top, y_top, z_top))
+            litho_groups[lith]['bottom'].append((x_bot, y_bot, z_bot))
+
+        # ========== 执行参数寻优 ==========
+        analysis_results = {}
+
+        if target_layer == 'all':
+            all_pts = []
+            for lith, group_data in litho_groups.items():
+                all_pts.extend(group_data['top'])
+
+            all_pts_arr = np.array(all_pts)
+            log_and_print(session_id, f"==> 分析整个数据集（{len(all_pts_arr)} 个控制点）")
+
+            def progress_cb(current, total, info):
+                log_and_print(session_id, f"  [{current}/{total}] {info}", 'info')
+
+            result = optimize_kriging_params(
+                x=all_pts_arr[:, 0],
+                y=all_pts_arr[:, 1],
+                z=all_pts_arr[:, 2],
+                progress_callback=progress_cb
+            )
+            analysis_results['all'] = result
+        else:
+            if target_layer not in litho_groups:
+                return jsonify({'error': f'未找到岩性: {target_layer}'}), 400
+
+            top_pts = np.array(litho_groups[target_layer]['top'])
+            log_and_print(session_id, f"==> 分析岩性: {target_layer}（{len(top_pts)} 个控制点）")
+
+            def progress_cb(current, total, info):
+                log_and_print(session_id, f"  [{current}/{total}] {info}", 'info')
+
+            result = optimize_kriging_params(
+                x=top_pts[:, 0],
+                y=top_pts[:, 1],
+                z=top_pts[:, 2],
+                progress_callback=progress_cb
+            )
+            analysis_results[target_layer] = result
+
+        # ========== 组织返回数据 ==========
+        result_data = {
+            'target_layer': target_layer,
+            'analysis': analysis_results,
+            'standards': KRIGING_RMSE_STANDARDS,
+            'nugget_ratio_standards': KRIGING_NUGGET_RATIO_STANDARDS,
+            'r2_standards': KRIGING_R2_STANDARDS,
+            'layers_available': list(litho_groups.keys())
+        }
+
+        # 缓存
+        if CACHE_ENABLED and input_hash:
+            save_cached_result(
+                session_id, KRIGING_ANALYSIS_CACHE_TYPE,
+                input_hash + cache_extra, result_data, OUTPUT_FOLDER, params_hash
+            )
+            log_and_print(session_id, "==> 克里金参数分析结果已缓存")
+
+        log_and_print(session_id, f"==> 克里金参数分析完成")
+
+        return jsonify({
+            'success': True,
+            'from_cache': False,
+            **result_data
+        })
+
+    except Exception as e:
+        log_and_print(session_id, f"!!! 克里金参数分析失败: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'error': str(e)}), 500
 
 
 @app.route('/api/analyze_rbf_params', methods=['POST'])
@@ -977,6 +1152,8 @@ def interactive_model_api():
         grid_resolution = user_params.get('GRID_RESOLUTION', GRID_RESOLUTION)
         drill_style = user_params.get('DRILL_STYLE', DRILL_STYLE)
         drill_radius = user_params.get('DRILL_RADIUS', DRILL_RADIUS)
+        interpolation_method = user_params.get('INTERPOLATION_METHOD', INTERPOLATION_METHOD)
+        kriging_variogram = user_params.get('KRIGING_VARIOGRAM', KRIGING_VARIOGRAM_MODEL)
 
         loc_df = pd.read_excel(file_path, sheet_name='定位表')
         survey_df = pd.read_excel(file_path, sheet_name='测斜表')
@@ -998,7 +1175,9 @@ def interactive_model_api():
                 loc_df, survey_df, litho_df, output_dir, base_name,
                 drill_style=drill_style, drill_radius=drill_radius,
                 n_layers=n_layers, rbf_function=rbf_function,
-                rbf_smooth=rbf_smooth, grid_resolution=grid_resolution
+                rbf_smooth=rbf_smooth, grid_resolution=grid_resolution,
+                method=interpolation_method,
+                kriging_variogram=kriging_variogram
             )
             log_and_print(session_id, "==> 生成完整3D模型（钻孔+地质体）")
 
@@ -1060,7 +1239,9 @@ def kriging_analysis_api():
                 for cp in result.get('comparison_paths', []):
                     if 'url' in cp and cp['url'].startswith('/outputs/'):
                         fname = cp['url'][len('/outputs/'):]
-                        cp['url'] = f'/outputs/{session_id}/{fname}'
+                        # 兼容新旧缓存：新缓存不含 session_id，旧缓存已含
+                        if not fname.startswith(session_id + '/'):
+                            cp['url'] = f'/outputs/{session_id}/{fname}'
                 return jsonify({
                     'success': True,
                     'from_cache': True,
@@ -1103,16 +1284,10 @@ def kriging_analysis_api():
 
         log_and_print(session_id, f"==> 成功分析 {result['layer_count']} 个岩性层")
 
-        # 修正 comparison_paths 中的 URL
-        comparison_paths = result['comparison_paths']
-        for cp in comparison_paths:
-            if 'url' in cp and cp['url'].startswith('/outputs/'):
-                fname = cp['url'][len('/outputs/'):]
-                cp['url'] = f'/outputs/{session_id}/{fname}'
-
-        # ========== 3. 保存缓存 ==========
+        # ========== 3. 保存缓存（使用不含 session_id 的原始 URL）==========
+        raw_comparison_paths = result['comparison_paths']
         result_data = {
-            'comparison_paths': comparison_paths,
+            'comparison_paths': raw_comparison_paths,
             'analysis_text': result['analysis_text'],
             'layer_count': result['layer_count'],
             'point_counts': result['point_counts']
@@ -1122,10 +1297,22 @@ def kriging_analysis_api():
             save_cached_result(session_id, 'kriging', input_hash, result_data, output_dir, params_hash)
             log_and_print(session_id, "==> 已保存克里金结果到缓存")
 
+        # 修正 comparison_paths 中的 URL（加上 session_id，仅用于本次响应）
+        comparison_paths = []
+        for cp in raw_comparison_paths:
+            cp_copy = dict(cp)
+            if 'url' in cp_copy and cp_copy['url'].startswith('/outputs/'):
+                fname = cp_copy['url'][len('/outputs/'):]
+                cp_copy['url'] = f'/outputs/{session_id}/{fname}'
+            comparison_paths.append(cp_copy)
+
         return jsonify({
             'success': True,
             'from_cache': False,
-            **result_data
+            'comparison_paths': comparison_paths,
+            'analysis_text': result_data['analysis_text'],
+            'layer_count': result_data['layer_count'],
+            'point_counts': result_data['point_counts']
         })
 
     except ImportError as e:
@@ -1193,7 +1380,9 @@ def kriging_surface_analysis_api():
                         val = layer.get(key)
                         if val and val.startswith('/outputs/'):
                             fname = val[len('/outputs/'):]
-                            layer[key] = f'/outputs/{session_id}/{fname}'
+                            # 兼容新旧缓存：新缓存不含 session_id，旧缓存已含
+                            if not fname.startswith(session_id + '/'):
+                                layer[key] = f'/outputs/{session_id}/{fname}'
                 return jsonify({
                     'success': True,
                     'from_cache': True,
@@ -1313,35 +1502,50 @@ def kriging_surface_analysis_api():
         except Exception as e:
             log_and_print(session_id, f"!!! 记录克里金数据失败: {e}")
 
-        # ========== 组织返回数据 ==========
-        result_data = {
-            'layers': [],
+        # ========== 构建不含 session_id 的原始 URL（用于缓存）==========
+        raw_layers = []
+        for r in results:
+            layer_info = {
+                'layer_name': r['layer_name'],
+                'top_url': f'/outputs/{os.path.basename(r["top_path"])}' if r['top_path'] else None,
+                'bot_url': f'/outputs/{os.path.basename(r["bot_path"])}' if r['bot_path'] else None,
+                'top_stats': r['top_stats'],
+                'bot_stats': r['bot_stats']
+            }
+            raw_layers.append(layer_info)
+
+        raw_result_data = {
+            'layers': raw_layers,
             'warnings': all_warnings,
             'variogram_model': variogram_model,
             'analysis_count': len([r for r in results if r['top_path'] or r['bot_path']])
         }
 
-        for r in results:
-            layer_info = {
-                'layer_name': r['layer_name'],
-                'top_url': f'/outputs/{session_id}/{os.path.basename(r["top_path"])}' if r['top_path'] else None,
-                'bot_url': f'/outputs/{session_id}/{os.path.basename(r["bot_path"])}' if r['bot_path'] else None,
-                'top_stats': r['top_stats'],
-                'bot_stats': r['bot_stats']
-            }
-            result_data['layers'].append(layer_info)
-
         # ========== 保存缓存 ==========
         if CACHE_ENABLED and input_hash:
-            save_cached_result(session_id, KRIGING_SURFACE_CACHE_TYPE, input_hash, result_data, output_dir, params_hash)
+            save_cached_result(session_id, KRIGING_SURFACE_CACHE_TYPE, input_hash, raw_result_data, output_dir, params_hash)
             log_and_print(session_id, "==> 曲面分析结果已缓存")
 
-        log_and_print(session_id, f"==> 克里金曲面分析完成，共 {result_data['analysis_count']} 个图层")
+        log_and_print(session_id, f"==> 克里金曲面分析完成，共 {raw_result_data['analysis_count']} 个图层")
+
+        # 构建含 session_id 的响应数据
+        response_layers = []
+        for layer in raw_layers:
+            layer_copy = dict(layer)
+            for key in ['top_url', 'bot_url']:
+                val = layer_copy.get(key)
+                if val and val.startswith('/outputs/'):
+                    fname = val[len('/outputs/'):]
+                    layer_copy[key] = f'/outputs/{session_id}/{fname}'
+            response_layers.append(layer_copy)
 
         return jsonify({
             'success': True,
             'from_cache': False,
-            **result_data
+            'layers': response_layers,
+            'warnings': raw_result_data['warnings'],
+            'variogram_model': raw_result_data['variogram_model'],
+            'analysis_count': raw_result_data['analysis_count']
         })
 
     except Exception as e:
@@ -1745,6 +1949,8 @@ def multiview_texture_upgrade_api():
         grid_resolution = user_params.get('GRID_RESOLUTION', GRID_RESOLUTION)
         drill_style = user_params.get('DRILL_STYLE', DRILL_STYLE)
         drill_radius = user_params.get('DRILL_RADIUS', DRILL_RADIUS)
+        interpolation_method = user_params.get('INTERPOLATION_METHOD', INTERPOLATION_METHOD)
+        kriging_variogram = user_params.get('KRIGING_VARIOGRAM', KRIGING_VARIOGRAM_MODEL)
 
         bodies, volume_data = build_geological_bodies_with_volume_v2(
             loc_df, litho_df, survey_df,
@@ -1752,7 +1958,9 @@ def multiview_texture_upgrade_api():
             rbf_function=rbf_function,
             rbf_smooth=rbf_smooth,
             grid_resolution=grid_resolution,
-            session_id=session_id
+            session_id=session_id,
+            method=interpolation_method,
+            kriging_variogram=kriging_variogram
         )
 
         if not volume_data:

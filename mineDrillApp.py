@@ -476,13 +476,17 @@ def generate_model_api():
             cached = get_cached_result(session_id, cache_model_key, input_hash, params_hash)
             if cached:
                 log_and_print(session_id, "==> 命中缓存，直接返回建模结果")
-                # 修正缓存的 URL 路径
+                # 修正缓存的 URL 路径（替换旧 session_id 为新 session_id）
                 result = cached['result']
                 for key in ['labeled_views', 'unlabeled_views']:
                     for item in result.get(key, []):
                         if 'url' in item and item['url'].startswith('/outputs/'):
-                            fname = item['url'][len('/outputs/'):]
-                            item['url'] = f'/outputs/{session_id}/{fname}'
+                            # URL 格式: /outputs/{old_session_id}/filename.png
+                            # 提取 filename 部分并替换 session_id
+                            parts = item['url'].split('/')
+                            if len(parts) >= 4:
+                                parts[2] = session_id  # 替换旧 session_id
+                                item['url'] = '/'.join(parts)
                 return jsonify({
                     'success': True,
                     'from_cache': True,
@@ -547,7 +551,7 @@ def generate_model_api():
                     'path': labeled_path,
                     'url': f'/outputs/{session_id}/{os.path.basename(labeled_path)}'
                 })
-                log_and_print(session_id, f"  ==> 标注图已保存: {os.path.basename(labeled_path)}")
+                log_and_print(session_id, f"  ==> 标注图已保存: {labeled_path} -> {f'/outputs/{session_id}/{os.path.basename(labeled_path)}'}")
             except Exception as e:
                 log_and_print(session_id, f"!!! 图{order} 标注图生成失败: {str(e)}")
                 import traceback
@@ -568,7 +572,7 @@ def generate_model_api():
                     'path': unlabeled_path,
                     'url': f'/outputs/{session_id}/{os.path.basename(unlabeled_path)}'
                 })
-                log_and_print(session_id, f"  ==> 无标注图已保存: {os.path.basename(unlabeled_path)}")
+                log_and_print(session_id, f"  ==> 无标注图已保存: {unlabeled_path} -> {f'/outputs/{session_id}/{os.path.basename(unlabeled_path)}'}")
             except Exception as e:
                 log_and_print(session_id, f"!!! 图{order} 无标注图生成失败: {str(e)}")
                 import traceback
@@ -594,13 +598,20 @@ def generate_model_api():
         color_map = filtered_color_map
 
         log_and_print(session_id, f"==> 最终颜色映射: {len(color_map)} 项")
+        # 验证文件确实存在
+        for item in results['labeled'] + results['unlabeled']:
+            if os.path.exists(item['path']):
+                log_and_print(session_id, f"  ✓ 文件存在: {item['path']}")
+            else:
+                log_and_print(session_id, f"  ✗ 文件不存在: {item['path']}")
         log_and_print(session_id, "==> 建模示意图生成完成")
 
         # ========== 8. 保存缓存 ==========
         result_data = {
             'labeled_views': results['labeled'],
             'unlabeled_views': results['unlabeled'],
-            'color_map': color_map
+            'color_map': color_map,
+            'default_selected_views': AI_DEFAULT_REFERENCE_VIEWS
         }
 
         if CACHE_ENABLED and input_hash:
@@ -976,9 +987,13 @@ def ai_modeling_api():
     session_id = data.get('session_id')
     color_map = data.get('color_map', {})
     file_path = data.get('file_path')  # 用于缓存的文件路径
+    selected_views = data.get('selected_views')  # 用户选择的视图 name 列表
 
     if not session_id:
         return jsonify({'error': '缺少必要参数'}), 400
+
+    if not selected_views or len(selected_views) != 3:
+        return jsonify({'error': '需要恰好选择3个视角作为参考图'}), 400
 
     update_session_activity(session_id)
 
@@ -1008,30 +1023,35 @@ def ai_modeling_api():
 
         output_dir = get_session_output_dir(session_id)
 
-        # ========== 按 AI_REFERENCE_ORDERS 选取参考图 ==========
+        # ========== 按 selected_views 选取参考图 ==========
         image_paths = []
-        for order in AI_REFERENCE_IMGS:
-            # 找到对应 order 的视图
-            view = next((v for v in VIEW_CONFIGS if v.get('order') == order), None)
+        view_metas = []
+        for view_name in selected_views:
+            # 找到对应 name 的视图配置
+            view = next((v for v in VIEW_CONFIGS if v.get('name') == view_name), None)
             if not view:
-                log_and_print(session_id, f"!!! 未找到 order={order} 的视图配置")
+                log_and_print(session_id, f"!!! 未找到 view_name={view_name} 的视图配置")
                 continue
 
-            order_prefix = f'{order:02d}_'
-            pattern_suffix = f'unlabeled_{order_prefix}{view["name"]}.png'
-
+            # 搜索 unlabeled 图（不再依赖 order 前缀）
+            pattern_suffix = f'unlabeled_'
             found = False
-            # 搜索 session 输出目录
+            # 搜索 session 输出目录：同时匹配 view name 和 pattern
             if os.path.exists(output_dir):
                 for filename in sorted(os.listdir(output_dir)):
-                    if filename.endswith(pattern_suffix):
+                    if view['name'] in filename and 'unlabeled' in filename and filename.endswith('.png'):
                         full_path = os.path.join(output_dir, filename)
                         image_paths.append(full_path)
-                        log_and_print(session_id, f"==> 图{order} ({view['label']}): {filename}")
+                        view_metas.append({
+                            'name': view['name'],
+                            'label': view['label'],
+                            'user_tip': view.get('user_tip', '')
+                        })
+                        log_and_print(session_id, f"==> {view['label']} ({view['name']}): {filename}")
                         found = True
                         break
             if not found:
-                log_and_print(session_id, f"!!! 未找到 图{order} 对应的图片: {pattern_suffix}")
+                log_and_print(session_id, f"!!! 未找到 {view['label']} 对应的 unlabeled 图片")
 
         if len(image_paths) < 3:
             return jsonify({
@@ -1041,8 +1061,8 @@ def ai_modeling_api():
         log_and_print(session_id, f"==> 使用参考图: {[os.path.basename(p) for p in image_paths]}")
         log_and_print(session_id, f"==> 颜色映射: {color_map}")
 
-        # 调用Qwen API
-        image_urls, error = call_qwen_api_for_modeling(image_paths, color_map)
+        # 调用Qwen API（传入 view_metas 用于构建动态 prompt）
+        image_urls, error = call_qwen_api_for_modeling(image_paths, view_metas, color_map)
 
         if error:
             return jsonify({'error': error}), 500
@@ -1076,11 +1096,12 @@ def ai_modeling_api():
         # ========== 自动评分 ==========
         from scoring import rank_ai_candidates
 
-        # 找参考图：Python 的图1 无标注图（在 session 目录中搜索）
+        # 找参考图：selected_views 中的第一个视图的 unlabeled 图
         ref_image_path = None
+        first_view_name = selected_views[0] if selected_views else 'main_view'
         if os.path.exists(output_dir):
             for f in sorted(os.listdir(output_dir)):
-                if 'unlabeled_01_main_view' in f and f.endswith('.png'):
+                if 'unlabeled' in f and first_view_name in f and f.endswith('.png'):
                     ref_image_path = os.path.join(output_dir, f)
                     break
 
@@ -1550,6 +1571,108 @@ def kriging_surface_analysis_api():
 
     except Exception as e:
         log_and_print(session_id, f"!!! 克里金曲面分析失败: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'error': str(e)}), 500
+
+
+# ==================== 模型质量评估 ====================
+
+@app.route('/api/evaluate_quality', methods=['POST'])
+def evaluate_quality_api():
+    """
+    模型质量评估接口。
+    接收 session_id 和 path，返回各检查项结果和综合评分。
+    """
+    data = request.json
+    session_id = data.get('session_id')
+    file_path = data.get('path')
+
+    if not session_id or not file_path:
+        return jsonify({'error': '缺少必要参数'}), 400
+
+    if not os.path.exists(file_path):
+        return jsonify({'error': '文件不存在'}), 400
+
+    update_session_activity(session_id)
+
+    if not ENABLE_QUALITY_CHECK:
+        return jsonify({'error': '模型质量评估功能未启用'}), 400
+
+    try:
+        from cache_manager import compute_file_hash, get_cached_result, save_cached_result
+        from params_manager import load_session_params, compute_params_hash
+
+        user_params = load_session_params(session_id)
+        params_hash = compute_params_hash(user_params)
+
+        log_and_print(session_id, "==> 开始模型质量评估...")
+
+        # ========== 缓存查询 ==========
+        input_hash = None
+        if CACHE_ENABLED:
+            input_hash = compute_file_hash(file_path)
+            cached = get_cached_result(session_id, QUALITY_CHECK_CACHE_TYPE, input_hash, params_hash)
+            if cached:
+                log_and_print(session_id, "==> 命中缓存，直接返回质量评估结果")
+                return jsonify({
+                    'success': True,
+                    'from_cache': True,
+                    **cached['result']
+                })
+
+        # ========== 执行评估 ==========
+        # 首先需要获取地质体 bodies
+        # 读取三个 sheet 并构建地质体
+        log_and_print(session_id, "正在读取数据...")
+        loc_df = pd.read_excel(file_path, sheet_name='定位表')
+        survey_df = pd.read_excel(file_path, sheet_name='测斜表')
+        litho_df = pd.read_excel(file_path, sheet_name='岩性表')
+        log_and_print(session_id, f"定位表: {len(loc_df)} 行, 测斜表: {len(survey_df)} 行, 岩性表: {len(litho_df)} 行")
+
+        from processors import build_geological_bodies_with_volume_v2
+
+        grid_resolution = user_params.get('GRID_RESOLUTION', GRID_RESOLUTION)
+        rbf_function = user_params.get('RBF_FUNCTION', RBF_FUNCTION)
+        rbf_smooth = user_params.get('RBF_SMOOTH', RBF_SMOOTH)
+        interpolation_method = user_params.get('INTERPOLATION_METHOD', INTERPOLATION_METHOD)
+        kriging_variogram = user_params.get('KRIGING_VARIOGRAM', KRIGING_VARIOGRAM_MODEL)
+
+        bodies, volume_data = build_geological_bodies_with_volume_v2(
+            loc_df, litho_df, survey_df,
+            n_layers=user_params.get('N_LAYERS', N_LAYERS),
+            rbf_function=rbf_function,
+            rbf_smooth=rbf_smooth,
+            grid_resolution=grid_resolution,
+            session_id=session_id,
+            method=interpolation_method,
+            kriging_variogram=kriging_variogram
+        )
+        if not bodies or not volume_data:
+            return jsonify({'error': '地质体构建失败，无法进行评估'}), 400
+
+        log_and_print(session_id, f"成功构建 {len(volume_data)} 个地质体，开始质量评估...")
+
+        # 执行综合评估
+        result = evaluate_model_quality(bodies, litho_df)
+
+        # ========== 保存缓存 ==========
+        if CACHE_ENABLED and input_hash:
+            save_cached_result(
+                session_id, QUALITY_CHECK_CACHE_TYPE,
+                input_hash, params_hash, result
+            )
+
+        log_and_print(session_id, f"==> 模型质量评估完成，综合评分: {result['overall_score']} 分，评级: {result['overall_grade']}")
+
+        return jsonify({
+            'success': True,
+            'from_cache': False,
+            **result
+        })
+
+    except Exception as e:
+        log_and_print(session_id, f"!!! 模型质量评估失败: {e}")
         import traceback
         traceback.print_exc()
         return jsonify({'error': str(e)}), 500
@@ -2033,14 +2156,23 @@ def multiview_texture_upgrade_api():
 
         # ========== 组织返回数据 ==========
         images = []
+        import time as _time
+        _cache_buster = str(int(_time.time()))
         for i, (order, view, _, _) in enumerate(ai_paths):
-            images.append({
-                'view_name': view['name'],
-                'view_label': view['label'],
-                'order': order,
-                'url': f'/outputs/{session_id}/{os.path.basename(unified_paths[i])}',
-                'has_ai': True
-            })
+            unified_path = unified_paths[i]
+            if os.path.exists(unified_path) and os.path.getsize(unified_path) > 0:
+                filename = os.path.basename(unified_path)
+                url = f'/outputs/{session_id}/{filename}?t={_cache_buster}'
+                images.append({
+                    'view_name': view['name'],
+                    'view_label': view['label'],
+                    'order': order,
+                    'url': url,
+                    'has_ai': True
+                })
+                log_and_print(session_id, f"  ✅ [{i}] {filename} ({os.path.getsize(unified_path)} bytes) → {url}")
+            else:
+                log_and_print(session_id, f"  ❌ [{i}] 文件不存在或为空: {unified_path}")
 
         log_and_print(session_id, f"==> 多视角纹理升级完成（成功 {success_count}/{len(geometry_paths)}）")
         return jsonify({

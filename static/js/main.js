@@ -11,6 +11,8 @@ var analysisData = null;
 var currentAnalysisMode = 'all'; // 'rbf' | 'kriging' | 'all'
 var drillViewsCache = null; // 缓存钻孔示意图结果，避免重复请求
 let hasClickedModeling = false; // 用户是否点击过建模示意图
+let hasRunParamAnalysis = false; // RBF参数分析是否已完成（启用建模示意图的前提）
+let selectedAIViews = [];  // 用户勾选的 AI 建模参考视图 name 列表
 
 
 // DOM 元素
@@ -29,6 +31,7 @@ const btnInteractive = document.getElementById('btnInteractive');
 
 const fullscreenModal = document.getElementById('fullscreenModal');
 const btnModelParams = document.getElementById('btnModelParams');
+const btnQualityCheck = document.getElementById('btnQualityCheck');
 const fullscreenImage = document.getElementById('fullscreenImage');
 const fullscreenClose = document.getElementById('fullscreenClose');
 
@@ -37,9 +40,11 @@ const interactiveClose = document.getElementById('interactiveClose');
 
 // ==================== 工具函数 ====================
 function setStatus(message, type = 'info') {
-    statusMessage.textContent = message;
-    statusMessage.className = 'status-message';
-    if (type) statusMessage.classList.add(type);
+    var el = document.getElementById('statusCurrent');
+    if (!el) el = statusMessage; // fallback
+    el.textContent = message;
+    el.className = 'status-current';
+    if (type) el.classList.add(type);
 }
 
 function formatFileSize(bytes) {
@@ -58,7 +63,7 @@ function updateButtonStates() {
     var btnAnalyzeKriging = document.getElementById('btnAnalyzeKriging');
 
     btnDrillViews.disabled = !hasFile;
-    btnModelViews.disabled = !hasFile;
+    btnModelViews.disabled = !hasFile || !hasRunParamAnalysis;
     btnInteractive.disabled = !hasFile;
     btnAIModeling.disabled = !hasModelViews;
     btnKriging.disabled = !hasFile;
@@ -67,6 +72,7 @@ function updateButtonStates() {
     if (btnAnalyzeRBF) btnAnalyzeRBF.disabled = !hasFile;
     if (btnAnalyzeKriging) btnAnalyzeKriging.disabled = !hasFile;
     if (btnModelParams) btnModelParams.disabled = !hasFile;
+    if (btnQualityCheck) btnQualityCheck.disabled = !hasFile;
 }
 
 // ==================== 统一卡片渲染 ====================
@@ -338,7 +344,8 @@ const BTN_TIMER_MAP = {
     btnKriging: 'interpTimer',
     btnKrigingAnalysis: 'interpTimer',
     btnAnalyzeRBF: 'rbfTimer',
-    btnAnalyzeKriging: 'krigingParamTimer'
+    btnAnalyzeKriging: 'krigingParamTimer',
+    btnQualityCheck: 'krigingParamTimer'
 };
 
 /** 每个容器内当前活跃的 timer 控制器 */
@@ -572,6 +579,9 @@ btnModelViews.addEventListener('click', async () => {
         }
 
         modelData = data;
+        console.log('Generate model response URLs:',
+            (data.labeled_views || []).map(function(v) { return v.url; }),
+            (data.unlabeled_views || []).map(function(v) { return v.url; }));
 
         // 移除加载提示
         const loadingEl = document.getElementById('modelLoading');
@@ -585,12 +595,18 @@ btnModelViews.addEventListener('click', async () => {
 
         if (data.labeled_views && data.labeled_views.length > 0 &&
             data.unlabeled_views && data.unlabeled_views.length > 0) {
-            // 标注版和无标注版联动轮播
+            // 标注版和无标注版联动轮播 — 包裹在统一容器中
+            var wrapper = document.createElement('div');
+            wrapper.className = 'model-views-wrapper';
+            resultsSection.appendChild(wrapper);
+
             var cont = document.createElement('div');
-            resultsSection.appendChild(cont);
+            wrapper.appendChild(cont);
             var labeledViews = data.labeled_views.map(function(v) { return { url: v.url, label: v.label || '' }; });
             var unlabeledViews = data.unlabeled_views.map(function(v) { return { url: v.url, label: v.label || '' }; });
             renderLinkedCarousel(cont, labeledViews, unlabeledViews, '标注版', '无标注版');
+            // 在轮播下方增加 AI 建模参考图选择区域
+            renderViewSelectionCheckboxes(data, wrapper);
         } else {
             // 只有其中一种时，用统一轮播
             if (data.labeled_views && data.labeled_views.length > 0) {
@@ -632,10 +648,125 @@ btnModelViews.addEventListener('click', async () => {
     }
 });
 
+// ==================== AI 建模参考图选择区域 ====================
+function renderViewSelectionCheckboxes(data, parentContainer) {
+	var container = parentContainer || document.getElementById('resultsSection');
+	if (!container || !data.unlabeled_views || data.unlabeled_views.length === 0) return;
+
+	// 移除旧的选择区域
+	var oldSel = document.getElementById('viewSelectionArea');
+	if (oldSel) oldSel.remove();
+
+	// 初始默认勾选
+	var defaultViews = data.default_selected_views || ['main_view', 'east_west_section', 'north_south_section'];
+	selectedAIViews = defaultViews.slice(0, 3);
+
+	var area = document.createElement('div');
+	area.id = 'viewSelectionArea';
+	area.className = 'view-selection';
+
+	var title = document.createElement('div');
+	title.className = 'view-selection-title';
+	title.textContent = '🤖 AI 建模参考图选择（请勾选恰好 3 张）：';
+	area.appendChild(title);
+
+	var grid = document.createElement('div');
+	grid.className = 'view-selection-grid';
+
+	// 按 order 排序
+	var views = data.unlabeled_views.slice().sort(function(a, b) { return (a.order || 0) - (b.order || 0); });
+
+	views.forEach(function(v) {
+		var isChecked = selectedAIViews.indexOf(v.name) !== -1;
+		var item = document.createElement('div');
+		item.className = 'view-selection-item' + (isChecked ? ' selected' : '');
+		item.dataset.viewName = v.name;
+
+		var checkbox = document.createElement('input');
+		checkbox.type = 'checkbox';
+		checkbox.checked = isChecked;
+		checkbox.className = 'view-checkbox';
+		checkbox.addEventListener('change', function() {
+			updateViewSelection(v.name, this.checked);
+		});
+
+		var thumb = document.createElement('img');
+		thumb.src = v.url;
+		thumb.alt = v.label || v.name;
+		thumb.addEventListener('click', function(e) {
+			checkbox.checked = !checkbox.checked;
+			updateViewSelection(v.name, checkbox.checked);
+		});
+
+		var label = document.createElement('span');
+		label.className = 'view-name';
+		label.textContent = v.label || v.name;
+
+		var topRow = document.createElement('div');
+		topRow.style.cssText = 'display:flex;align-items:center;gap:4px;width:100%;';
+		topRow.appendChild(checkbox);
+		topRow.appendChild(label);
+
+		item.appendChild(topRow);
+		item.appendChild(thumb);
+		grid.appendChild(item);
+	});
+
+	area.appendChild(grid);
+
+	var status = document.createElement('div');
+	status.className = 'view-selection-status';
+	status.id = 'viewSelectionStatus';
+	status.textContent = '已选择 ' + selectedAIViews.length + '/3';
+	area.appendChild(status);
+
+	container.appendChild(area);
+}
+
+function updateViewSelection(viewName, checked) {
+	if (checked) {
+		if (selectedAIViews.indexOf(viewName) === -1) {
+			if (selectedAIViews.length >= 3) {
+				var removed = selectedAIViews.shift();
+				var oldItem = document.querySelector('.view-selection-item[data-view-name="' + removed + '"]');
+				if (oldItem) {
+					oldItem.classList.remove('selected');
+					var oldCb = oldItem.querySelector('.view-checkbox');
+					if (oldCb) oldCb.checked = false;
+				}
+			}
+			selectedAIViews.push(viewName);
+		}
+	} else {
+		var idx = selectedAIViews.indexOf(viewName);
+		if (idx !== -1) selectedAIViews.splice(idx, 1);
+	}
+
+	var item = document.querySelector('.view-selection-item[data-view-name="' + viewName + '"]');
+	if (item) {
+		if (checked) {
+			item.classList.add('selected');
+		} else {
+			item.classList.remove('selected');
+		}
+	}
+
+	var status = document.getElementById('viewSelectionStatus');
+	if (status) {
+		status.textContent = '已选择 ' + selectedAIViews.length + '/3';
+	}
+}
+
 // ==================== AI建模 ====================
 btnAIModeling.addEventListener('click', async () => {
     if (!modelData || !modelData.color_map || Object.keys(modelData.color_map).length === 0) {
         setStatus('!!! 请先生成建模示意图', 'error');
+        return;
+    }
+
+    // 验证恰好选中3个视角
+    if (!selectedAIViews || selectedAIViews.length !== 3) {
+        setStatus('!!! 请勾选恰好3个视角作为AI建模参考图', 'error');
         return;
     }
 
@@ -644,6 +775,10 @@ btnAIModeling.addEventListener('click', async () => {
 
     const timer = startButtonTimer(btnAIModeling, 'AI 建模中');
 
+    // 设置 300s 超时，防止连接静默断开
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 300000);
+
     try {
         const response = await fetch('/api/ai_modeling', {
             method: 'POST',
@@ -651,9 +786,12 @@ btnAIModeling.addEventListener('click', async () => {
             body: JSON.stringify({
                 session_id: sessionId,
                 color_map: modelData.color_map,
-                file_path: filePath
-            })
+                file_path: filePath,
+                selected_views: selectedAIViews
+            }),
+            signal: controller.signal
         });
+        clearTimeout(timeoutId);
         const data = await response.json();
         stopLogPolling();
 
@@ -691,7 +829,8 @@ function renderAICandidates(data) {
     resultsSection.classList.add('visible');
 
     let html = '<h2>AI 建模结果（候选图）</h2>';
-    html += '<div class="uniform-grid">';
+    // 两张候选左右平放
+    html += '<div class="linked-carousel">';
 
     for (const c of data.candidates) {
         const isBest = (c.index === data.best_index);
@@ -702,12 +841,18 @@ function renderAICandidates(data) {
             ? '几何相似度: ' + (c.scores.ssim * 100).toFixed(1)
             : '';
 
+        html += '<div class="linked-pane">';
         html += '<div class="uniform-card" data-index="' + c.index + '" style="' + (isBest ? 'border:2px solid #2E7D32;' : '') + '">';
         if (isBest) {
             html += '<div style="position:absolute;top:12px;right:12px;background:#2E7D32;color:white;padding:4px 10px;border-radius:4px;font-size:12px;font-weight:bold;z-index:10;">推荐</div>';
         }
-        html += '<div class="card-img-wrapper" style="cursor:default;">';
+        // 图片容器：包含 hover 显示的放大和下载按钮
+        html += '<div class="card-img-wrapper">';
         html += '<img src="' + c.url + '" alt="AI 候选 ' + c.index + '" style="width:100%;max-height:400px;object-fit:contain;background:#f8f9fc;display:block;">';
+        // 放大镜按钮
+        html += '<button class="uniform-zoom-btn zoom-btn" data-url="' + c.url + '" title="放大预览">🔍</button>';
+        // 下载按钮
+        html += '<button class="uniform-zoom-btn download-btn" data-url="' + c.url + '" data-index="' + c.index + '" title="下载保存" style="right:62px;">⬇</button>';
         html += '</div>';
         html += '<div class="card-title">候选 ' + c.index;
         if (scoreText) html += ' | ' + scoreText;
@@ -715,6 +860,7 @@ function renderAICandidates(data) {
         html += '</div>';
         html += '<div style="padding:8px 16px 12px;text-align:center;">';
         html += '<button class="btn-select" data-index="' + c.index + '" style="width:100%;">使用这张</button>';
+        html += '</div>';
         html += '</div>';
         html += '</div>';
     }
@@ -726,6 +872,29 @@ function renderAICandidates(data) {
     }
 
     resultsSection.innerHTML = html;
+
+    // 绑定放大镜按钮
+    document.querySelectorAll('.uniform-zoom-btn.zoom-btn').forEach(btn => {
+        btn.addEventListener('click', function(e) {
+            e.stopPropagation();
+            openFullscreen(this.dataset.url);
+        });
+    });
+
+    // 绑定下载按钮
+    document.querySelectorAll('.uniform-zoom-btn.download-btn').forEach(btn => {
+        btn.addEventListener('click', function(e) {
+            e.stopPropagation();
+            var imgUrl = this.dataset.url;
+            var index = this.dataset.index;
+            var link = document.createElement('a');
+            link.href = imgUrl;
+            link.download = 'AI建模_候选' + index + '.png';
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+        });
+    });
 
     // 绑定选择按钮
     document.querySelectorAll('.btn-select').forEach(btn => {
@@ -805,9 +974,7 @@ btnInteractive.addEventListener('click', async () => {
         // Tab 栏
         html += '<div class="interactive-tab-bar">';
         html += '<button class="interactive-tab active" data-tab="drill">🔬 钻孔3D模型</button>';
-        if (hasClickedModeling) {
-            html += '<button class="interactive-tab" data-tab="geology">🏔️ 地质体模型</button>';
-        }
+        html += '<button class="interactive-tab" data-tab="geology">🏔️ 地质体模型</button>';
         html += '</div>';
 
         // Tab 内容区域
@@ -817,13 +984,12 @@ btnInteractive.addEventListener('click', async () => {
         html += '<iframe src="' + drillHtmlUrl + '"></iframe>';
         html += '</div>';
         html += '</div>';
-        if (hasClickedModeling) {
-            html += '<div class="interactive-tab-content" id="tab-geology">';
+        // 地质体模型标签（懒加载）
+        html += '<div class="interactive-tab-content" id="tab-geology">';
             html += '<div class="interactive-frame-content" style="display:flex;align-items:center;justify-content:center;">';
             html += '<p style="color:#999;font-size:16px;">💡 点击地质体模型选项卡后加载</p>';
             html += '</div>';
             html += '</div>';
-        }
         html += '</div>';
 
         content.innerHTML = html;
@@ -847,9 +1013,7 @@ btnInteractive.addEventListener('click', async () => {
                     var geologyContent = document.getElementById('tab-geology');
                     // 检查是否已经加载了地质体模型（是否有 iframe）
                     if (geologyContent && !geologyContent.querySelector('iframe')) {
-                        geologyContent.innerHTML = '<div class="interactive-frame-content" style="display:flex;align-items:center;justify-content:center;">';
-                        geologyContent.innerHTML += '<p style="color:#666;font-size:16px;">⏳ 正在加载地质体模型...</p>';
-                        geologyContent.innerHTML += '</div>';
+                        geologyContent.innerHTML = '<div class="interactive-frame-content" style="display:flex;align-items:center;justify-content:center;"><p style="color:#666;font-size:16px;">⏳ 正在加载地质体模型...</p></div>';
 
                         try {
                             var fullResp = await fetch('/api/interactive_model', {
@@ -864,18 +1028,12 @@ btnInteractive.addEventListener('click', async () => {
                             var fullData = await fullResp.json();
 
                             if (!fullData.error && fullData.html_url) {
-                                geologyContent.innerHTML = '<div class="interactive-frame-content">';
-                                geologyContent.innerHTML += '<iframe src="' + fullData.html_url + '"></iframe>';
-                                geologyContent.innerHTML += '</div>';
+                                geologyContent.innerHTML = '<div class="interactive-frame-content"><iframe src="' + fullData.html_url + '"></iframe></div>';
                             } else {
-                                geologyContent.innerHTML = '<div class="interactive-frame-content" style="display:flex;align-items:center;justify-content:center;">';
-                                geologyContent.innerHTML += '<p style="color:#e74c3c;font-size:16px;">地质体模型生成失败</p>';
-                                geologyContent.innerHTML += '</div>';
+                                geologyContent.innerHTML = '<div class="interactive-frame-content" style="display:flex;align-items:center;justify-content:center;"><p style="color:#e74c3c;font-size:16px;">地质体模型生成失败</p></div>';
                             }
                         } catch(e) {
-                            geologyContent.innerHTML = '<div class="interactive-frame-content" style="display:flex;align-items:center;justify-content:center;">';
-                            geologyContent.innerHTML += '<p style="color:#e74c3c;font-size:16px;">加载失败: ' + e.message + '</p>';
-                            geologyContent.innerHTML += '</div>';
+                            geologyContent.innerHTML = '<div class="interactive-frame-content" style="display:flex;align-items:center;justify-content:center;"><p style="color:#e74c3c;font-size:16px;">加载失败: ' + e.message + '</p></div>';
                         }
                     }
                 }
@@ -1162,24 +1320,163 @@ function renderMultiviewResults(data) {
     resultsSection.innerHTML = '';
     resultsSection.classList.add('visible');
 
+    if (!data.images || data.images.length === 0) {
+        resultsSection.innerHTML = '<p>没有可显示的图片</p>';
+        return;
+    }
+
+    const uid = 'multiview-' + Date.now() + '-' + Math.random().toString(36).substr(2, 6);
     let html = '<h2>多视角纹理升级结果</h2>';
     html += '<p style="color:#666;font-size:13px;margin-bottom:12px;">成功生成 ' + data.success_count + '/' + data.total_count + ' 张。</p>';
 
-    html += '<div class="uniform-grid">';
-    for (const img of data.images) {
-        html += '<div class="uniform-card">';
-        html += '<div class="card-title" style="border-top:none;background:#f5f5f5;font-weight:700;color:#333;">' + img.view_label + '</div>';
-        html += '<div class="card-img-wrapper" style="cursor:default;">';
-        html += '<img src="' + img.url + '" alt="' + img.view_label + '" style="width:100%;max-height:350px;object-fit:contain;background:#f8f9fc;display:block;">';
+    // 翻页式轮播容器
+    html += '<div class="carousel-container" id="' + uid + '">';
+    html += '<div class="carousel-viewport">';
+    html += '<div class="carousel-track" id="track-' + uid + '">';
+    for (let i = 0; i < data.images.length; i++) {
+        const img = data.images[i];
+        html += '<div class="carousel-slide">';
+        // 标题
+        html += '<div class="card-title" style="border-top:none;background:#f5f5f5;font-weight:700;color:#333;padding:8px 16px;text-align:center;">' + img.view_label + '</div>';
+        // 图片 + 操作按钮
+        html += '<div class="card-img-wrapper" style="position:relative;">';
+        html += '<img src="' + img.url + '" alt="' + img.view_label + '" style="width:100%;max-height:400px;object-fit:contain;background:#f8f9fc;display:block;" onerror="this.style.display=\'none\';this.insertAdjacentHTML(\'afterend\',\'<div style=background:#fff3cd;color:#856404;padding:40px;text-align:center;border-radius:4px>⚠️ 图片加载失败<br><small>\' + this.src.split(\'?t=\')[0].split(\'/\').pop() + \'</small></div>\')">';
+        // 放大镜按钮
+        html += '<button class="btn-zoom" data-url="' + img.url + '" title="放大预览">🔍</button>';
+        // 下载按钮
+        html += '<button class="btn-zoom-dl" data-url="' + img.url + '" data-label="' + img.view_label + '" title="下载保存">⬇</button>';
         html += '</div>';
-        html += '<div style="padding:8px 16px;text-align:center;">';
-        html += '<a href="' + img.url + '" download class="btn-download" style="display:inline-block;padding:6px 16px;background:#1565C0;color:white;border-radius:4px;text-decoration:none;font-size:13px;">下载</a>';
+        // 选择按钮
+        html += '<div style="padding:8px 16px 12px;text-align:center;">';
+        html += '<button class="btn-select" data-url="' + img.url + '" data-path="' + (img.path || '') + '" data-label="' + img.view_label + '" style="width:100%;">使用这张</button>';
         html += '</div>';
         html += '</div>';
     }
+    html += '</div></div>';
+
+    // 控制栏
+    html += '<div class="carousel-controls">';
+    html += '<button class="carousel-btn" data-action="prev" data-uid="' + uid + '">‹</button>';
+    html += '<span class="carousel-label" id="label-' + uid + '">' + data.images[0].view_label + '</span>';
+    html += '<div class="carousel-indicators" id="indicators-' + uid + '">';
+    for (let i = 0; i < data.images.length; i++) {
+        html += '<button class="carousel-dot ' + (i === 0 ? 'active' : '') + '" data-index="' + i + '" data-uid="' + uid + '"></button>';
+    }
+    html += '</div>';
+    html += '<button class="carousel-btn" data-action="next" data-uid="' + uid + '">›</button>';
+    html += '</div>';
+
+    // 下载按钮组
+    html += '<div style="display:flex; justify-content:center; gap:12px; margin-top:12px; flex-wrap:wrap;">';
+    html += '<button class="btn btn-primary" onclick="downloadCurrentMultiview(\'' + uid + '\')">📥 下载当前图</button>';
+    html += '<button class="btn btn-primary" onclick="downloadAllMultiview(\'' + uid + '\')">📥 下载全部</button>';
+    html += '</div>';
     html += '</div>';
 
     resultsSection.innerHTML = html;
+
+    // 初始化轮播状态
+    const state = { views: data.images, currentIndex: 0, uid: uid };
+    const containerEl = document.getElementById(uid);
+    containerEl._carouselState = state;
+
+    // 绑定翻页事件
+    containerEl.querySelector('[data-action="prev"]').addEventListener('click', function() {
+        const st = containerEl._carouselState;
+        st.currentIndex = (st.currentIndex - 1 + st.views.length) % st.views.length;
+        updateMultiviewCarousel(containerEl);
+    });
+    containerEl.querySelector('[data-action="next"]').addEventListener('click', function() {
+        const st = containerEl._carouselState;
+        st.currentIndex = (st.currentIndex + 1) % st.views.length;
+        updateMultiviewCarousel(containerEl);
+    });
+    containerEl.querySelectorAll('.carousel-dot').forEach(dot => {
+        dot.addEventListener('click', function() {
+            const idx = parseInt(this.dataset.index);
+            const st = containerEl._carouselState;
+            st.currentIndex = idx;
+            updateMultiviewCarousel(containerEl);
+        });
+    });
+
+    // 绑定选择按钮
+    containerEl.querySelectorAll('.btn-select').forEach(btn => {
+        btn.addEventListener('click', function() {
+            const url = this.dataset.url;
+            const path = this.dataset.path;
+            const label = this.dataset.label;
+            // 高亮选中的卡片
+            containerEl.querySelectorAll('.btn-select').forEach(b => b.style.background = '');
+            this.style.background = '#2E7D32';
+            this.style.color = '#fff';
+            this.textContent = '✅ 已选择';
+            setStatus('==> 已选择: ' + label, 'success');
+        });
+    });
+
+    // 绑定放大镜按钮（直接使用 openFullscreen）
+    containerEl.querySelectorAll('.zoom-btn').forEach(btn => {
+        btn.addEventListener('click', function(e) {
+            e.stopPropagation();
+            openFullscreen(this.dataset.url);
+        });
+    });
+
+    // 绑定下载按钮
+    containerEl.querySelectorAll('.dl-btn').forEach(btn => {
+        btn.addEventListener('click', function(e) {
+            e.stopPropagation();
+            const link = document.createElement('a');
+            link.href = this.dataset.url;
+            link.download = (this.dataset.label || 'multiview') + '.png';
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+        });
+    });
+}
+
+function updateMultiviewCarousel(containerEl) {
+    const state = containerEl._carouselState;
+    const track = containerEl.querySelector('.carousel-track');
+    const label = containerEl.querySelector('.carousel-label');
+    const dots = containerEl.querySelectorAll('.carousel-dot');
+
+    if (track) {
+        track.style.transform = 'translateX(-' + (state.currentIndex * 100) + '%)';
+    }
+    if (label && state.views[state.currentIndex]) {
+        label.textContent = state.views[state.currentIndex].view_label;
+    }
+    dots.forEach((dot, i) => {
+        dot.classList.toggle('active', i === state.currentIndex);
+    });
+}
+
+function downloadCurrentMultiview(uid) {
+    const container = document.getElementById(uid);
+    if (!container) return;
+    const state = container._carouselState;
+    if (!state) return;
+    const view = state.views[state.currentIndex];
+    if (view) {
+        const link = document.createElement('a');
+        link.href = view.url;
+        link.download = (view.view_label || 'multiview') + '.png';
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+    }
+}
+
+function downloadAllMultiview(uid) {
+    const container = document.getElementById(uid);
+    if (!container) return;
+    const state = container._carouselState;
+    if (!state) return;
+    const urls = state.views.map(v => v.url);
+    downloadAllAsZip(urls, 'multiview_texture_upgrade.zip');
 }
 
 // ==================== 轮播及功能 ====================
@@ -1820,9 +2117,15 @@ if (btnAnalyzeRBF) {
 
             // 渲染结果
             renderRBFAnalysisResults(data);
+
+            // 自动应用推荐参数，并启用建模示意图
+            if (data.best && data.best.rbf_function) {
+                applyBestParams(data.best);
+            }
+            hasRunParamAnalysis = true;
             updateButtonStates();
             hideResultTabs();
-            setStatus('==> RBF 参数分析完成', 'success');
+            setStatus('==> RBF 参数分析完成，已自动应用推荐参数，可点击建模示意图', 'success');
             if (timer) timer.stop();
 
         } catch (error) {
@@ -1948,6 +2251,330 @@ if (btnAnalyzeKriging) {
             if (timer) timer.stop();
         }
     });
+}
+
+// ==================== 模型质量评估 ====================
+if (btnQualityCheck) {
+    btnQualityCheck.addEventListener('click', async function() {
+        if (!sessionId || !filePath) {
+            setStatus('!!! 请先上传文件', 'error');
+            return;
+        }
+
+        // 隐藏钻孔模型容器
+        var drillContainer = document.getElementById('drillModelContainer');
+        if (drillContainer) drillContainer.style.display = 'none';
+
+        var resultsSection = document.getElementById('resultsSection');
+        if (resultsSection) {
+            resultsSection.innerHTML = '';
+            resultsSection.classList.remove('visible');
+        }
+
+        // 开始评估
+        startLogPolling(sessionId);
+        setStatus('正在进行模型质量评估...', 'loading');
+        var timer = startButtonTimer(btnQualityCheck, '质量评估中');
+
+        // 显示进度条
+        if (resultsSection) {
+            resultsSection.innerHTML = [
+                '<div class="analysis-progress">',
+                '   <h3>✅ 模型质量评估进行中</h3>',
+                '   <div class="progress-bar-wrap">',
+                '       <div class="progress-bar-fill" id="qualityProgressFill" style="width: 0%;"></div>',
+                '   </div>',
+                '   <p id="qualityProgressText">准备中...</p>',
+                '</div>'
+            ].join('');
+            resultsSection.classList.add('visible');
+        }
+
+        // 假进度
+        var fakeProgress = 0;
+        var progressInterval = setInterval(function() {
+            fakeProgress += 15;
+            if (fakeProgress > 90) fakeProgress = 90;
+            var fill = document.getElementById('qualityProgressFill');
+            var text = document.getElementById('qualityProgressText');
+            if (fill) fill.style.width = fakeProgress + '%';
+            if (text) text.textContent = '正在评估...（约 ' + fakeProgress + '%）';
+        }, 500);
+
+        try {
+            var response = await fetch('/api/evaluate_quality', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    session_id: sessionId,
+                    path: filePath
+                })
+            });
+            var data = await response.json();
+            stopLogPolling();
+
+            clearInterval(progressInterval);
+
+            if (data.error) {
+                setStatus('!!! ' + data.error, 'error');
+                if (timer) timer.stop();
+                if (resultsSection) {
+                    resultsSection.innerHTML = '<p style="color:#c62828;text-align:center;padding:40px;">评估失败: ' + data.error + '</p>';
+                }
+                if (drillContainer) drillContainer.style.display = 'flex';
+                return;
+            }
+
+            var fill = document.getElementById('qualityProgressFill');
+            if (fill) fill.style.width = '100%';
+
+            renderQualityReport(data);
+            updateButtonStates();
+            hideResultTabs();
+            setStatus('==> 模型质量评估完成', 'success');
+            if (timer) timer.stop();
+
+        } catch (error) {
+            stopLogPolling();
+            clearInterval(progressInterval);
+            setStatus('!!! 评估失败: ' + error.message, 'error');
+            if (timer) timer.stop();
+        }
+    });
+}
+
+// ==================== 质量评估渲染函数 ====================
+
+function renderQualityReport(data) {
+    var html = buildQualityReportHTML(data);
+    var section = document.getElementById('resultsSection');
+    if (!section) return;
+    section.innerHTML = html;
+    section.classList.add('visible');
+
+    // 初始化 Tab 切换
+    initQualityTabs();
+
+    // 填充各 Tab 内容
+    renderIntersectionTab(data.layer_intersection);
+    renderThicknessTab(data.thickness_variation);
+    renderPinchoutTab(data.pinch_out);
+    renderSummaryTab(data);
+
+    // 默认选中第一个 Tab
+    activateQualityTab('tab-intersection');
+}
+
+function buildQualityReportHTML(data) {
+    return [
+        '<div class="quality-report">',
+        '  <h2 class="quality-report-title">✅ 模型质量评估报告</h2>',
+        '  <div class="quality-score-card">',
+        '    <div class="quality-score-circle" style="border-color: ' + data.grade_color + '">',
+        '      <span class="quality-score-value" style="color: ' + data.grade_color + '">' + data.overall_score + '</span>',
+        '      <span class="quality-score-label" style="color: ' + data.grade_color + '">' + data.overall_grade + '</span>',
+        '    </div>',
+        '    <div class="quality-score-detail">',
+        '      <p class="quality-score-title">综合评分</p>',
+        '      <p class="quality-score-sub">满分 100 分</p>',
+        '    </div>',
+        '  </div>',
+        '  <div class="quality-tabs">',
+        '    <button class="quality-tab active" data-tab="tab-intersection">层间关系检查</button>',
+        '    <button class="quality-tab" data-tab="tab-thickness">厚度变化检查</button>',
+        '    <button class="quality-tab" data-tab="tab-pinchout">尖灭识别</button>',
+        '    <button class="quality-tab" data-tab="tab-summary">综合质量报告</button>',
+        '  </div>',
+        '  <div class="quality-tab-content" id="tab-intersection"></div>',
+        '  <div class="quality-tab-content" id="tab-thickness" style="display:none"></div>',
+        '  <div class="quality-tab-content" id="tab-pinchout" style="display:none"></div>',
+        '  <div class="quality-tab-content" id="tab-summary" style="display:none"></div>',
+        '</div>'
+    ].join('');
+}
+
+function initQualityTabs() {
+    var tabs = document.querySelectorAll('.quality-tab');
+    tabs.forEach(function(tab) {
+        tab.addEventListener('click', function() {
+            var target = this.getAttribute('data-tab');
+            activateQualityTab(target);
+        });
+    });
+}
+
+function activateQualityTab(tabId) {
+    // Tab 按钮激活状态
+    var tabs = document.querySelectorAll('.quality-tab');
+    tabs.forEach(function(t) { t.classList.remove('active'); });
+    var activeTab = document.querySelector('.quality-tab[data-tab="' + tabId + '"]');
+    if (activeTab) activeTab.classList.add('active');
+
+    // 内容切换
+    var contents = document.querySelectorAll('.quality-tab-content');
+    contents.forEach(function(c) { c.style.display = 'none'; });
+    var targetContent = document.getElementById(tabId);
+    if (targetContent) targetContent.style.display = 'block';
+}
+
+function renderIntersectionTab(data) {
+    var container = document.getElementById('tab-intersection');
+    if (!container) return;
+
+    var statusIcon = data.has_intersection ? '❌' : '✅';
+    var statusText = data.has_intersection ? '存在穿层' : '无穿层';
+    var statusColor = data.has_intersection ? '#c62828' : '#2E7D32';
+
+    var html = [
+        '<div class="quality-block">',
+        '  <h3>层间关系检查</h3>',
+        '  <div class="metric-row">',
+        '    <div class="metric-item">',
+        '      <span class="metric-label">状态</span>',
+        '      <span class="metric-value" style="color:' + statusColor + '">' + statusIcon + ' ' + statusText + '</span>',
+        '    </div>',
+        '    <div class="metric-item">',
+        '      <span class="metric-label">穿层网格数</span>',
+        '      <span class="metric-value">' + data.intersection_cells + ' / ' + data.total_cells + '</span>',
+        '    </div>',
+        '    <div class="metric-item">',
+        '      <span class="metric-label">穿层比例</span>',
+        '      <span class="metric-value">' + (data.intersection_ratio * 100).toFixed(2) + '%</span>',
+        '    </div>',
+        '  </div>',
+        '  <div class="quality-hint">注意：穿层指同一位置顶面低于底面，通常由数据异常或插值失真引起。</div>',
+        '</div>'
+    ];
+
+    if (data.details && data.details.length > 0) {
+        html.push('<div class="quality-block"><h4>穿层位置详情（最多显示 5 处）</h4><ul class="quality-list">');
+        data.details.forEach(function(d) {
+            html.push('<li>岩性 <strong>' + d.layer + '</strong> 在 (' + d.x.toFixed(1) + ', ' + d.y.toFixed(1) + ') 处差值 ' + d.gap.toFixed(2) + ' m</li>');
+        });
+        html.push('</ul></div>');
+    }
+
+    container.innerHTML = html.join('');
+}
+
+function renderThicknessTab(data) {
+    var container = document.getElementById('tab-thickness');
+    if (!container) return;
+
+    if (!data.layers || data.layers.length === 0) {
+        container.innerHTML = '<div class="quality-block"><p>无厚度变化数据</p></div>';
+        return;
+    }
+
+    var html = ['<div class="quality-block"><h3>厚度变化检查</h3>'];
+    data.layers.forEach(function(layer) {
+        var anomalyIcon = layer.has_anomaly ? '⚠️' : '✅';
+        var anomalyColor = layer.has_anomaly ? '#F57C00' : '#2E7D32';
+        html.push([
+            '<div class="quality-layer-card">',
+            '  <h4>' + anomalyIcon + ' 岩性: ' + layer.layer + '</h4>',
+            '  <div class="metric-row">',
+            '    <div class="metric-item"><span class="metric-label">最大厚度梯度</span><span class="metric-value">' + layer.max_gradient + ' m/m</span></div>',
+            '    <div class="metric-item"><span class="metric-label">厚度范围</span><span class="metric-value">' + layer.thickness_min + ' ~ ' + layer.thickness_max + ' m</span></div>',
+            '    <div class="metric-item"><span class="metric-label">平均厚度</span><span class="metric-value">' + layer.thickness_mean + ' m</span></div>',
+            '    <div class="metric-item"><span class="metric-label">梯度异常网格</span><span class="metric-value" style="color:' + anomalyColor + '">' + layer.anomaly_count + '</span></div>',
+            '  </div>',
+            '</div>'
+        ].join(''));
+    });
+    html.push('</div>');
+    container.innerHTML = html.join('');
+}
+
+function renderPinchoutTab(data) {
+    var container = document.getElementById('tab-pinchout');
+    if (!container) return;
+
+    if (!data.layers || data.layers.length === 0) {
+        container.innerHTML = '<div class="quality-block"><p>无尖灭数据</p></div>';
+        return;
+    }
+
+    var html = ['<div class="quality-block"><h3>尖灭识别</h3>'];
+    data.layers.forEach(function(layer) {
+        var icon = layer.is_reasonable ? '✅' : '⚠️';
+        var color = layer.is_reasonable ? '#2E7D32' : '#F57C00';
+        html.push([
+            '<div class="quality-layer-card">',
+            '  <h4>' + icon + ' 岩性: ' + layer.layer + '</h4>',
+            '  <div class="metric-row">',
+            '    <div class="metric-item"><span class="metric-label">尖灭比例</span><span class="metric-value">' + (layer.pinch_ratio * 100).toFixed(2) + '%</span></div>',
+            '    <div class="metric-item"><span class="metric-label">尖灭网格数</span><span class="metric-value">' + layer.pinch_count + '</span></div>',
+            '    <div class="metric-item"><span class="metric-label">判断</span><span class="metric-value" style="color:' + color + '">' + layer.comment + '</span></div>',
+            '  </div>',
+            '</div>'
+        ].join(''));
+    });
+    html.push('</div>');
+    container.innerHTML = html.join('');
+}
+
+function renderSummaryTab(data) {
+    var container = document.getElementById('tab-summary');
+    if (!container) return;
+
+    var html = [
+        '<div class="quality-block">',
+        '  <h3>📋 综合质量报告</h3>',
+        '  <div class="quality-summary-card">',
+        '    <div class="quality-summary-header" style="border-left: 4px solid ' + data.grade_color + '">',
+        '      <h4 style="color:' + data.grade_color + '">综合评级：' + data.overall_grade + '（' + data.overall_score + ' 分）</h4>',
+        '    </div>'
+    ];
+
+    // 扣分项
+    if (data.penalties && data.penalties.length > 0) {
+        html.push('<div class="quality-penalties"><h4>扣分项</h4><ul class="quality-list">');
+        data.penalties.forEach(function(p) {
+            html.push('<li>' + p + '</li>');
+        });
+        html.push('</ul></div>');
+    } else {
+        html.push('<div class="quality-penalties"><p style="color:#2E7D32">✅ 无扣分项</p></div>');
+    }
+
+    // 已知局限
+    if (data.limitations && data.limitations.length > 0) {
+        html.push('<div class="quality-limitations"><h4>已知局限</h4><ul class="quality-list">');
+        data.limitations.forEach(function(l) {
+            html.push('<li>' + l + '</li>');
+        });
+        html.push('</ul></div>');
+    }
+
+    // 参数调整建议
+    if (data.recommendations && data.recommendations.length > 0) {
+        html.push('<div class="quality-recommendations"><h4>💡 参数调整建议</h4>');
+        data.recommendations.forEach(function(r) {
+            var bgColor = '#e3f2fd';
+            var borderColor = '#1565C0';
+            var icon = '💡';
+            if (r.severity === 'warning') {
+                bgColor = '#fff3e0';
+                borderColor = '#F57C00';
+                icon = '⚠️';
+            } else if (r.severity === 'error') {
+                bgColor = '#ffebee';
+                borderColor = '#C62828';
+                icon = '❌';
+            }
+            html.push([
+                '<div class="recommendation-item" style="background:' + bgColor + ';border-left:3px solid ' + borderColor + '">',
+                '  <span class="recommendation-text">' + icon + ' ' + r.text + '</span>',
+                '</div>'
+            ].join(''));
+        });
+        html.push('</div>');
+    }
+
+    html.push('  </div>');
+    html.push('</div>');
+    container.innerHTML = html.join('');
 }
 
 /**
@@ -2205,7 +2832,7 @@ function renderRBFAnalysisResults(data) {
     html += '       <div class="best-param-row"><span class="label">建议：</span><span class="value">' + currentStd.suggestion + '</span></div>';
     html += '   </div>';
     html += '   <div class="best-param-actions">';
-    html += '       <button class="btn btn-primary" id="btnApplyBestParams">✅ 应用此参数到当前会话</button>';
+    html += '       <span class="best-param-applied">✅ 已应用推荐参数</span>';
     html += '       <button class="btn" id="btnCopyBestParams">📋 复制参数</button>';
     html += '   </div>';
     html += '</div>';
@@ -2281,11 +2908,6 @@ function renderRBFAnalysisResults(data) {
     }, 100);
 
     // 绑定按钮事件
-    var btnApply = document.getElementById('btnApplyBestParams');
-    if (btnApply) {
-        btnApply.addEventListener('click', function() { applyBestParams(best); });
-    }
-
     var btnCopy = document.getElementById('btnCopyBestParams');
     if (btnCopy) {
         btnCopy.addEventListener('click', function() { copyBestParams(best); });
@@ -2294,16 +2916,22 @@ function renderRBFAnalysisResults(data) {
 
 /**
  * 绘制 RMSE 热力图（Plotly）
- * 横轴为平滑度，纵轴为核函数，颜色深度表示 RMSE 大小
+ * 横轴为平滑度，纵轴为 (核函数, epsilon) 组合，颜色深度表示 RMSE 大小
+ * 每个单元格对应输出表格中的一行，不再聚合不同 epsilon
  */
 function drawRMSEHeatmap(allResults) {
-    var functions = [];
-    var funcMap = {};
+    // 收集所有 (函数, epsilon) 组合和所有 smooth 值
+    var rowKeySet = {};  // key -> { func, eps, label }
+    var rowKeys = [];
     for (var fi = 0; fi < allResults.length; fi++) {
-        var fname = allResults[fi].rbf_function;
-        if (!funcMap[fname]) {
-            funcMap[fname] = true;
-            functions.push(fname);
+        var r = allResults[fi];
+        var eps = (r.epsilon !== null && r.epsilon !== undefined) ? r.epsilon : null;
+        var key = r.rbf_function + '|' + eps;
+        if (!rowKeySet[key]) {
+            var label = r.rbf_function;
+            if (eps !== null) label += ' (ε=' + eps + ')';
+            rowKeySet[key] = { func: r.rbf_function, eps: eps, label: label };
+            rowKeys.push(key);
         }
     }
 
@@ -2313,35 +2941,36 @@ function drawRMSEHeatmap(allResults) {
     }
     var smooths = Object.keys(smoothSet).map(Number).sort(function(a, b) { return a - b; });
 
-    // 构建 RMSE 矩阵（每个 func × smooth 取最优 epsilon 的 RMSE）
-    // 使用 NaN 代替 null，Plotly 对 NaN 处理更稳定
+    // 构建 RMSE 矩阵 — 每行一个 (函数, epsilon)，每列一个 smooth
     var rmseMatrix = [];
     var hoverTexts = [];
+    var yLabels = [];
+    var cellRmses = [];
 
-    // 找出全局最小/最大 RMSE 用于 colorscale 固定范围
-    var allRmses = allResults.map(function(r) { return r.rmse; }).filter(function(v) { return isFinite(v); });
-    var globalMin = allRmses.length > 0 ? Math.min.apply(null, allRmses) : 0;
-    var globalMax = allRmses.length > 0 ? Math.max.apply(null, allRmses) : 1;
-    if (globalMax <= globalMin) globalMax = globalMin + 1;
-
-    for (var fi2 = 0; fi2 < functions.length; fi2++) {
-        var func = functions[fi2];
+    for (var ri = 0; ri < rowKeys.length; ri++) {
+        var rk = rowKeySet[rowKeys[ri]];
         var row = [];
         var hRow = [];
         for (var si2 = 0; si2 < smooths.length; si2++) {
             var sm = smooths[si2];
-            var candidates = allResults.filter(function(r) {
-                return r.rbf_function === func && r.smooth === sm;
-            });
-            if (candidates.length > 0) {
-                var minRmse = Math.min.apply(null, candidates.map(function(c) { return c.rmse; }));
-                row.push(parseFloat(minRmse.toFixed(2)));
-                var bestCand = candidates.reduce(function(a, b) { return a.rmse < b.rmse ? a : b; });
-                var txt = '核函数: ' + func + '<br>smooth: ' + sm;
-                if (bestCand.epsilon !== null && bestCand.epsilon !== undefined) {
-                    txt += '<br>最优 epsilon: ' + bestCand.epsilon;
+            var found = null;
+            for (var ai = 0; ai < allResults.length; ai++) {
+                var ar = allResults[ai];
+                var arEps = (ar.epsilon !== null && ar.epsilon !== undefined) ? ar.epsilon : null;
+                if (ar.rbf_function === rk.func && arEps === rk.eps && ar.smooth === sm) {
+                    found = ar;
+                    break;
                 }
-                txt += '<br>RMSE: ' + bestCand.rmse.toFixed(2) + ' m';
+            }
+            if (found && typeof found.rmse === 'number' && isFinite(found.rmse)) {
+                var val = parseFloat(found.rmse.toFixed(2));
+                row.push(val);
+                cellRmses.push(found.rmse);
+                var txt = '核函数: ' + rk.func + '<br>smooth: ' + sm;
+                if (found.epsilon !== null && found.epsilon !== undefined) {
+                    txt += '<br>epsilon: ' + found.epsilon;
+                }
+                txt += '<br>RMSE: ' + found.rmse.toFixed(2) + ' m<br>MAE: ' + found.mae.toFixed(2) + ' m';
                 hRow.push(txt);
             } else {
                 row.push(NaN);
@@ -2350,17 +2979,27 @@ function drawRMSEHeatmap(allResults) {
         }
         rmseMatrix.push(row);
         hoverTexts.push(hRow);
+        yLabels.push(rk.label);
     }
+
+    // 从单元格 RMSE 值计算 zmax（105% 上浮）
+    cellRmses.sort(function(a, b) { return a - b; });
+    var cellMax = cellRmses.length > 0 ? cellRmses[cellRmses.length - 1] : 1;
+    var zmax = Math.ceil(cellMax * 1.05);
+    var zmin = 0;
+
+    console.log('[RBF热力图] yLabels:', yLabels, '单元格数:', cellRmses.length, 'cellMax:', cellMax, 'zmax:', zmax);
 
     var trace = {
         z: rmseMatrix,
         x: smooths.map(String),
-        y: functions,
+        y: yLabels,
         type: 'heatmap',
         colorscale: 'RdYlGn_r',
         showscale: true,
-        zmin: globalMin,
-        zmax: globalMax,
+        zauto: false,
+        zmin: zmin,
+        zmax: zmax,
         colorbar: { title: 'RMSE (m)' },
         text: hoverTexts,
         hoverinfo: 'text',
@@ -2369,8 +3008,8 @@ function drawRMSEHeatmap(allResults) {
 
     var layout = {
         xaxis: { title: '平滑度 (smooth)', type: 'category' },
-        yaxis: { title: '核函数', type: 'category' },
-        margin: { l: 140, r: 40, t: 20, b: 60 },
+        yaxis: { title: '核函数 (epsilon)', type: 'category' },
+        margin: { l: 220, r: 40, t: 20, b: 60 },
         paper_bgcolor: 'rgba(0,0,0,0)',
         plot_bgcolor: 'rgba(0,0,0,0)'
     };
@@ -2378,6 +3017,9 @@ function drawRMSEHeatmap(allResults) {
     var heatmapDiv = document.getElementById('rmseHeatmap');
     if (heatmapDiv && typeof Plotly !== 'undefined') {
         Plotly.newPlot(heatmapDiv, [trace], layout, { responsive: true });
+        console.log('[RBF热力图] Plotly 已渲染，矩阵行数:', rmseMatrix.length, '列数:', rmseMatrix[0] ? rmseMatrix[0].length : 0);
+    } else {
+        console.warn('[RBF热力图] 无法渲染: heatmapDiv=' + !!heatmapDiv + ' Plotly=' + (typeof Plotly));
     }
 }
 
@@ -2403,6 +3045,19 @@ function applyBestParams(best) {
 
     var smoothSlider = document.getElementById('param_RBF_SMOOTH_slider');
     if (smoothSlider) smoothSlider.value = best.smooth;
+
+    // 保存到服务器，清除旧缓存，使下次生成使用新参数
+    var params = { RBF_FUNCTION: best.rbf_function, RBF_SMOOTH: best.smooth };
+    fetch('/api/save_params', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ session_id: sessionId, params: params })
+    }).then(function(r) { return r.json(); }).then(function(data) {
+        if (!data.error && data.params_hash) {
+            savedParamsHash = data.params_hash;
+            try { localStorage.setItem('params_' + sessionId, JSON.stringify(data.params)); } catch(e) {}
+        }
+    }).catch(function(e) { console.warn('保存参数失败:', e); });
 
     setStatus('==> 推荐参数已应用到当前会话（下次生成时生效）', 'success');
 
@@ -2535,7 +3190,7 @@ function renderKrigingParamResults(data) {
     html += '       <div class="best-param-row"><span class="label">建议：</span><span class="value">' + currentStd.suggestion + '</span></div>';
     html += '   </div>';
     html += '   <div class="best-param-actions">';
-    html += '       <button class="btn btn-primary" id="btnApplyKrigingBestParams">✅ 应用此参数到当前会话</button>';
+    html += '       <span class="best-param-applied">✅ 已应用推荐参数</span>';
     html += '       <button class="btn" id="btnCopyKrigingBestParams">📋 复制参数</button>';
     html += '   </div>';
     html += '</div>';
@@ -2670,11 +3325,6 @@ function renderKrigingParamResults(data) {
         drawKrigingNuggetRatioChart(allResults);
         drawKrigingR2Chart(allResults);
     }, 100);
-
-    var btnApply = document.getElementById('btnApplyKrigingBestParams');
-    if (btnApply) {
-        btnApply.addEventListener('click', function() { applyKrigingBestParams(best); });
-    }
 
     var btnCopy = document.getElementById('btnCopyKrigingBestParams');
     if (btnCopy) {
@@ -2868,6 +3518,19 @@ function applyKrigingBestParams(best) {
 
     var el = document.getElementById('param_KRIGING_VARIOGRAM');
     if (el) el.value = best.variogram_model;
+
+    // 保存到服务器，清除旧缓存，使下次生成使用新参数
+    var params = { KRIGING_VARIOGRAM: best.variogram_model };
+    fetch('/api/save_params', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ session_id: sessionId, params: params })
+    }).then(function(r) { return r.json(); }).then(function(data) {
+        if (!data.error && data.params_hash) {
+            savedParamsHash = data.params_hash;
+            try { localStorage.setItem('params_' + sessionId, JSON.stringify(data.params)); } catch(e) {}
+        }
+    }).catch(function(e) { console.warn('保存参数失败:', e); });
 
     setStatus('==> 推荐参数已应用到当前会话（下次生成时生效）', 'success');
 
@@ -3618,10 +4281,13 @@ function startLogPolling(sessionId) {
         logInterval = null;
     }
 
-    // ===== 清空状态栏，并设置为日志容器 =====
-    const statusDiv = document.getElementById('statusMessage');
-    statusDiv.innerHTML = '';
-    statusDiv.className = 'status-message log-container';
+    // ===== 在日志历史中添加分隔线 =====
+    var historyEl = document.getElementById('statusHistory');
+    if (historyEl && historyEl.children.length > 0) {
+        var sep = document.createElement('div');
+        sep.className = 'log-separator';
+        historyEl.appendChild(sep);
+    }
 
     lastLogTime = 0;
     isProcessing = true;
@@ -3650,24 +4316,22 @@ function stopLogPolling() {
         logInterval = null;
     }
     isProcessing = false;
-    // 保留所有日志行，仅切换回普通状态样式
-    const statusDiv = document.getElementById('statusMessage');
-    statusDiv.className = 'status-message success';
 }
 
 function appendLogMessage(msg, type) {
-    const statusDiv = document.getElementById('statusMessage');
-    const line = document.createElement('div');
+    var historyEl = document.getElementById('statusHistory');
+    if (!historyEl) historyEl = document.getElementById('statusMessage');
+    var line = document.createElement('div');
     line.textContent = msg;
     line.className = 'log-line';
     if (type === 'error') line.style.color = '#f44747';
     else if (type === 'success') line.style.color = '#6a9955';
     else if (type === 'warning') line.style.color = '#dcdcaa';
     else line.style.color = '#d4d4d4';
-    statusDiv.appendChild(line);
+    historyEl.appendChild(line);
     // 自动滚动到底部
-    const container = statusDiv.parentElement;
-    container.scrollTop = container.scrollHeight;
+    var container = document.getElementById('statusBody');
+    if (container) container.scrollTop = container.scrollHeight;
 }
 
 // 地图初始化函数
@@ -3836,6 +4500,8 @@ function resetToInitialState() {
     currentData = null;
     isTemplateData = true;
     window.analysisData = null;
+    hasRunParamAnalysis = false;
+    hasClickedModeling = false;
 
     // 重置结果区域
     var resultsSection = document.getElementById('resultsSection');

@@ -14,6 +14,7 @@ from matplotlib.path import Path
 import plotly.graph_objects as go
 import os
 import json
+import io
 import requests
 import base64
 from pyproj import Transformer
@@ -373,11 +374,12 @@ def plot_drill_holes_on_ax(ax, loc_df, survey_df, litho_df,
         litho_df: 岩性表 DataFrame
         legend_labels: 已存在的图例集合（set），用于去重。若为 None 则新建。
         show_labels: 是否显示钻孔编号
-        show_legend: 是否显示图例（每个岩性只显示一次）
+        show_legend: 是否收集图例信息（不创建3D代理线，由调用者通过2D Line2D构建图例）
         drill_style: 钻孔样式 ('cylinder'|'line')，None=使用config默认值
         drill_radius: 钻孔半径（米），None=使用config默认值
     返回:
-        legend_labels: 更新后的图例集合
+        (legend_labels, legend_entries): legend_labels 为去重后的岩性名称集合，
+            legend_entries 为 [(lith_name, color_rgb), ...] 列表（按首次出现顺序）
     """
     from config import (DRILL_STYLE as CFG_STYLE, DRILL_RADIUS as CFG_RADIUS,
                         DRILL_FORCE_LINE_THRESHOLD, DRILL_DEGRADE_THRESHOLD)
@@ -389,6 +391,8 @@ def plot_drill_holes_on_ax(ax, loc_df, survey_df, litho_df,
 
     if legend_labels is None:
         legend_labels = set()
+
+    legend_entries = []  # 按首次出现顺序收集 (lith_name, color_rgb)
 
     total_segments = len(litho_df)
 
@@ -404,80 +408,74 @@ def plot_drill_holes_on_ax(ax, loc_df, survey_df, litho_df,
         print(f"==> 钻孔绘制模式: {use_style}（共 {total_segments} 段）")
 
     hole_ids = loc_df['钻孔编号'].unique()
-    
+
     for hid in hole_ids:
         row = loc_df[loc_df['钻孔编号'] == hid].iloc[0]
         x0 = row['开孔坐标N']
         y0 = row['开孔坐标E']
         z0 = row['开孔高程R']
-        
+
         surv = survey_df[survey_df['钻孔编号'] == hid]
         if len(surv) == 0:
             continue
-        
+
         lengths, xs, ys, zs = compute_trajectory(surv)
         xs = xs + x0
         ys = ys + y0
         zs = zs + z0
-        
+
         # 钻孔中心线（虚线）
         ax.plot(xs, ys, zs, color='gray', linewidth=1, alpha=0.3, linestyle='--')
-        
+
         # 岩性段
         litho = litho_df[litho_df['钻孔编号'] == hid].sort_values(
             '上层位长度起始刻度', ascending=True)
-        
+
         for idx, seg in litho.iterrows():
             d_top = seg['上层位长度起始刻度']
             d_bot = seg['下层位长度起始刻度']
             lith_name = seg['岩性描述']
             color = parse_color(seg['建模颜色'], lith_name)
-            
+
             if d_top < lengths[0]:
                 d_top = lengths[0]
             if d_bot > lengths[-1]:
                 d_bot = lengths[-1]
             if d_top >= d_bot:
                 continue
-            
+
             d_sample = np.linspace(d_top, d_bot, max(3, int((d_bot - d_top) / 0.5)))
             x, y, z = get_interpolated_coords(lengths, xs, ys, zs, d_sample)
-            
-            show_this_label = show_legend and (lith_name not in legend_labels)
-        
+
+            # 收集图例信息（不创建 3D 代理线，避免影响深度排序）
+            if show_legend and (lith_name not in legend_labels):
+                legend_labels.add(lith_name)
+                legend_entries.append((lith_name, color[:3]))
+
             # 根据 use_style 选择绘制方式
             if use_style == 'cylinder':
                 plot_cylinder_segment(ax, x, y, z, color,
                                     radius=drill_radius,
                                     sides=DRILL_CYLINDER_SIDES)
-                # 图例通过一个代理线段实现
-                if show_this_label:
-                    ax.plot([], [], [], color=color[:3], linewidth=6,
-                            label=lith_name)
-                    legend_labels.add(lith_name)
             else:
-                # 原有线段模式
-                ax.plot(x, y, z, color=color[:3], alpha=color[3], linewidth=6,
-                        label=lith_name if show_this_label else "")
-                if show_this_label:
-                    legend_labels.add(lith_name)
+                # 线段模式（不带 label，避免生成 3D 代理线影响深度排序）
+                ax.plot(x, y, z, color=color[:3], alpha=color[3], linewidth=6)
 
         # 钻孔编号
         if show_labels:
             ax.text(x0, y0, z0 + 3, hid, color='black', fontsize=12,
                     ha='center', va='bottom', weight='bold')
-    
-    return legend_labels
+
+    return legend_labels, legend_entries
 
 # 增加水印
-def add_view_order_watermark(fig, order, label=''):
-    """在 figure 左上角绘制序号水印（图1、图2...）"""
-    watermark = f'图 {order}'
-    if label:
-        watermark += f'  {label}'
+def add_view_label_watermark(fig, label=''):
+    """在 figure 左上角绘制视图名称水印"""
+    if not label:
+        return
     fig.text(
-        0.02, 0.98, watermark,
-        fontsize=22, fontweight='bold', color='#1a237e',
+        0.02, 0.98, label,
+        fontsize=16, fontweight='bold', color='#1a237e',
         ha='left', va='top',
         bbox=dict(boxstyle='round,pad=0.5', facecolor='white',
                   edgecolor='#1a237e', linewidth=2, alpha=0.95),
@@ -518,9 +516,9 @@ def draw_single_model_view(volume_data, loc_df, survey_df, litho_df,
                 edgecolor='none'
             )
     
-    # 2. 标注版：额外绘制钻孔、图例、编号
+    # 2. 绘制钻孔（仅标注版，无标注版不绘制钻孔）
     if labeled:
-        legend_labels = plot_drill_holes_on_ax(
+        legend_labels, legend_entries = plot_drill_holes_on_ax(
             ax, loc_df, survey_df, litho_df,
             legend_labels=set(),
             show_labels=True,
@@ -528,8 +526,13 @@ def draw_single_model_view(volume_data, loc_df, survey_df, litho_df,
             drill_style=drill_style,
             drill_radius=drill_radius
         )
-        if legend_labels:
-            ax.legend(loc='upper right', fontsize=8)
+        if legend_entries:
+            from matplotlib.lines import Line2D
+            legend_handles = [
+                Line2D([0], [0], color=color, linewidth=6, label=name)
+                for name, color in legend_entries
+            ]
+            ax.legend(handles=legend_handles, loc='upper right', fontsize=8)
     
     # 3. 坐标轴样式
     if labeled:
@@ -608,14 +611,18 @@ def draw_single_model_view(volume_data, loc_df, survey_df, litho_df,
     # 5. 视角与保存
     ax.view_init(elev=view_config['elev'], azim=view_config['azim'])
 
-    # ========== 添加序号水印 ==========
+    # ========== 添加视角名称水印 ==========
     order = view_config.get('order', 0)
-    if order > 0:
-        add_view_order_watermark(fig, order, view_config.get('label', ''))
+    view_label = view_config.get('label', '')
+    if view_label:
+        add_view_label_watermark(fig, view_label)
 
     # ========== 保存（文件名带序号前缀） ==========
-    if labeled:
+    # tight_layout 在无标注版（隐藏 X/Y 轴）会报 'bboxes' cannot be empty
+    try:
         plt.tight_layout(pad=0.5)
+    except ValueError:
+        pass  # 无标注版轴隐藏时无法计算 bbox，跳过
     
     suffix = '_labeled' if labeled else '_unlabeled'
     order_prefix = f'{order:02d}_' if order > 0 else ''
@@ -687,26 +694,32 @@ def generate_drill_views(loc_df, survey_df, litho_df, output_dir, base_name):
         ax = fig.add_subplot(111, projection='3d')
         
         # 复用统一的钻孔绘制函数
-        legend_labels = plot_drill_holes_on_ax(
+        legend_labels, legend_entries = plot_drill_holes_on_ax(
             ax, loc_df_rel, survey_df, litho_df,
             legend_labels=set(),
             show_labels=True,
             show_legend=True
         )
-        
+
         ax.set_xlabel('北 (m)')
         ax.set_ylabel('东 (m)')
         ax.set_zlabel('海拔 (m)')
         ax.view_init(elev=config['elev'], azim=config['azim'])
-        
+
         all_n_rel = loc_df_rel['开孔坐标N'].values
         all_e_rel = loc_df_rel['开孔坐标E'].values
         margin = 20
         ax.set_xlim(all_n_rel.min() - margin, all_n_rel.max() + margin)
         ax.set_ylim(all_e_rel.min() - margin, all_e_rel.max() + margin)
-        
-        if legend_labels:
-            ax.legend(loc='upper right', fontsize=8)
+
+        if legend_entries:
+            # 使用 2D Line2D 构建图例
+            from matplotlib.lines import Line2D
+            legend_handles = [
+                Line2D([0], [0], color=color, linewidth=6, label=name)
+                for name, color in legend_entries
+            ]
+            ax.legend(handles=legend_handles, loc='upper right', fontsize=8)
         
         plt.title(f'钻孔示意图 - {config["label"]}', fontsize=14)
         plt.tight_layout()
@@ -853,16 +866,24 @@ def generate_drill_model_only(loc_df, survey_df, litho_df, output_dir, base_name
             xaxis=dict(title='开孔坐标N (m)', range=[all_n.min() - margin, all_n.max() + margin]),
             yaxis=dict(title='开孔坐标E (m)', range=[all_e.min() - margin, all_e.max() + margin]),
             zaxis=dict(title='海拔高度 (m)', range=[z_min_all - 10, all_z.max() + 5]),
-            camera=dict(eye=dict(x=1.5, y=1.5, z=1.0))
+            camera=dict(
+                eye=dict(x=1.5, y=1.5, z=1.0),
+                center=dict(x=0, y=0, z=0)
+            )
         ),
-        width=1200,
-        height=800,
+        autosize=True,
         title='交互式钻孔模型',
-        margin=dict(l=10, r=10, t=40, b=10)
+        margin=dict(l=5, r=5, t=40, b=5),
+        paper_bgcolor='rgba(0,0,0,0)',
+        plot_bgcolor='rgba(0,0,0,0)'
     )
 
     html_path = os.path.join(output_dir, f'{base_name}.html')
-    fig.write_html(html_path)
+    fig.write_html(html_path, config={
+        'responsive': True,
+        'scrollZoom': True,
+        'displayModeBar': True
+    })
     return html_path
 
 
@@ -1051,10 +1072,12 @@ def generate_interactive_model(loc_df, survey_df, litho_df, output_dir, base_nam
             xaxis=dict(title='开孔坐标N (m)', range=[all_n.min()-margin, all_n.max()+margin]),
             yaxis=dict(title='开孔坐标E (m)', range=[all_e.min()-margin, all_e.max()+margin]),
             zaxis=dict(title='海拔高度 (m)', range=[z_min_all-10, all_z.max()+5]),
-            camera=dict(eye=dict(x=1.5, y=1.5, z=1.0))
+            camera=dict(
+                eye=dict(x=1.5, y=1.5, z=1.0),
+                center=dict(x=0, y=0, z=0)
+            )
         ),
-        width=1200,
-        height=800,
+        autosize=True,
         title='交互式三维地质体模型',
         legend=dict(
             x=1.02,
@@ -1062,53 +1085,36 @@ def generate_interactive_model(loc_df, survey_df, litho_df, output_dir, base_nam
             xanchor='left',
             yanchor='top',
             font=dict(size=11)
-        )
+        ),
+        margin=dict(l=5, r=5, t=40, b=5),
+        paper_bgcolor='rgba(0,0,0,0)',
+        plot_bgcolor='rgba(0,0,0,0)'
     )
-    
+
     html_path = os.path.join(output_dir, f'{base_name}.html')
-    fig.write_html(html_path)
+    fig.write_html(html_path, config={'responsive': True, 'scrollZoom': True, 'displayModeBar': True})
     
     return html_path
 
 # ==================== AI建模 ====================
-def call_qwen_api_for_modeling(image_paths, color_map=None, api_key=QWEN_API_KEY, api_url=QWEN_API_URL, model=QWEN_MODEL):
+def call_qwen_api_for_modeling(image_paths, view_metas=None, color_map=None, api_key=QWEN_API_KEY, api_url=QWEN_API_URL, model=QWEN_MODEL):
     """
     调用 Token Plan API 生成 AI 建模图。
     使用 HTTP 直接请求，无需 dashscope SDK。
+
+    参数:
+        image_paths: 参考图文件路径列表（3张）
+        view_metas: 每个视图的元信息列表，每个元素 {'name', 'label', 'user_tip'}
+        color_map: 颜色映射 dict
     """
     if not api_key:
         return None, "!!! API密钥未配置，请设置 QWEN_KEY 环境变量"
 
-    # ========== 1. 检查图片 ==========
-    # 按 order 严格排序，确保与提示词编号一致
-    sorted_views = sorted(VIEW_CONFIGS, key=lambda v: v.get('order', 0))
+    # ========== 1. 验证图片 ==========
+    if not image_paths or len(image_paths) < 3:
+        return None, f"!!! 需要3张参考图，当前只找到 {len(image_paths) if image_paths else 0} 张"
 
-    image_paths = []
-    for order in AI_REFERENCE_IMGS:
-        # 找到对应 order 的视图配置
-        view = next((v for v in sorted_views if v.get('order') == order), None)
-        if not view:
-            print(f"!!! 未找到 order={order} 的视图配置")
-            continue
-        
-        order_prefix = f'{order:02d}_'
-        pattern_suffix = f'unlabeled_{order_prefix}{view["name"]}.png'
-        
-        found = False
-        for filename in os.listdir(OUTPUT_FOLDER):
-            if filename.endswith(pattern_suffix):
-                image_paths.append(os.path.join(OUTPUT_FOLDER, filename))
-                print(f"==> 图{order} ({view['label']}): {filename}")
-                found = True
-                break
-        
-        if not found:
-            print(f"!!! 未找到 图{order} 对应的图片: {pattern_suffix}")
-
-    if len(image_paths) < 3:
-        return None, f"!!! 需要3张参考图，当前只找到 {len(image_paths)} 张"
-
-    print(f"==> 已选 {len(image_paths)} 张参考图（按图{AI_REFERENCE_IMGS}顺序）")
+    print(f"==> 已选 {len(image_paths)} 张参考图")
 
     # ========== 2. 构建颜色描述 ==========
     if color_map and isinstance(color_map, dict):
@@ -1125,24 +1131,51 @@ def call_qwen_api_for_modeling(image_paths, color_map=None, api_key=QWEN_API_KEY
     else:
         color_relations = '各岩性用对应颜色表达'
 
-    geomodel_prompt=f"""
-请根据以下3张同一地质体的不同视角参考图，生成一张统一、逼真的三维地质结构模型渲染图。
+    # ========== 3. 动态构建视角描述 ==========
+    if view_metas and len(view_metas) >= 3:
+        view_descriptions = []
+        for i, vm in enumerate(view_metas):
+            prefix = ''
+            if i == 0:
+                prefix = '作为几何形态的**主参考**，用于确定地质体的整体空间轮廓'
+            elif i == 1:
+                prefix = '作为垂向结构的**精确约束**。此图的每一条岩性分界线的高程位置，必须在生成结果中严格对应'
+            elif i == 2:
+                prefix = '与上一张正交，共同约束三维形态'
+            view_descriptions.append(f'- {vm["label"]} —— {vm.get("user_tip", "")}（{prefix}）')
+
+        # 检测两个剖面视图是否正交
+        profile_views = []
+        for vm in view_metas:
+            if '剖面' in vm.get('label', ''):
+                profile_views.append(vm['label'])
+        profile_line = ''
+        if len(profile_views) >= 2:
+            profile_line = f'- {profile_views[0]}和{profile_views[1]}是两个正交剖面，它们的**岩性分界线的深度位置必须严格对应**，这两个剖面的交点处（即钻孔位置附近）的层位深度应完全一致。\n'
+    else:
+        # fallback: 使用 view_metas 的第一条信息，或通用描述
+        if view_metas:
+            view_descriptions = [f'- {vm["label"]}: {vm.get("user_tip", "")}' for vm in view_metas]
+        else:
+            view_descriptions = ['- 第1张：整体三维形态参考', '- 第2张：垂向结构参考', '- 第3张：正交方向参考']
+        profile_line = '- 后两张参考图如果是正交剖面，它们的**岩性分界线的深度位置必须严格对应**。\n'
+
+    geomodel_prompt = f"""
+请根据以下{len(view_descriptions)}张同一地质体的不同视角参考图，生成一张统一、逼真的三维地质结构模型渲染图。
 
 【坐标约定】
 本模型采用地质行业标准坐标：
 - X 轴：东向（Easting）
 - Y 轴：北向（Northing）
 - Z 轴：高程（Elevation，向上为正）
-【重要】每张图的左上角标注有原始序号，请严格按以下说明理解（注意：本次仅提供3张图，编号不连续）：
-- 图1（立体全景视图·西北俯瞰）—— 站在矿体西北方向的高处俯视。展示地质体的整体三维形态、走向和倾伏方向，作为几何形态的**主参考**，用于确定地质体的整体空间轮廓。
-- 图3（南北向剖面·从西侧向东看）—— 站在矿体正西侧，水平向东看。屏幕水平方向为南北（Y 轴），左侧南、右侧北。展示地质体在南北方向的**厚度变化和层位深度**，作为垂向结构的**精确约束**。这张图上的每一条岩性分界线的高程位置，必须在生成结果中严格对应。
-- 图5（东西向剖面·从北侧向南看）—— 站在矿体正北侧，水平向南看。屏幕水平方向为东西（X 轴，反向），左侧东、右侧西。展示地质体在东西方向的**厚度变化和层位深度**，与图3正交，共同约束三维形态。
+
+【参考视角说明】
+{chr(10).join(view_descriptions)}
 
 【关键说明】
-- 上述3张图是同一个地质体的不同视角，请综合理解其三维空间结构，不要将它们视为多个独立物体。
-- 参考图左上角的"图N"是编号标识，请在生成结果中忽略这些序号文字，只关注地质体的形态和颜色。
-- 图3和图5是两个正交剖面，它们的**岩性分界线的深度位置必须严格对应**，这两个剖面的交点处（即钻孔位置附近）的层位深度应完全一致。
-
+- 上述{len(view_descriptions)}张图是同一个地质体的不同视角，请综合理解其三维空间结构，不要将它们视为多个独立物体。
+- 参考图左上角的文字是该视角的名称标识，请在生成结果中忽略这些标识文字，只关注地质体的形态和颜色。
+{profile_line}
 【参考图的性质说明】
 上述参考图是**基于有限钻孔数据通过数学插值生成的初步模型**，具有以下特点：
 - 其边界受钻孔控制点的空间分布范围限制，呈现为"被凸包裁剪"的形态，边缘生硬。
@@ -1153,7 +1186,7 @@ def call_qwen_api_for_modeling(image_paths, color_map=None, api_key=QWEN_API_KEY
 请以参考图为骨架约束，运用地质学常识进行科学化的推断与填充，生成一个相对完整、符合地质规律的三维地质体：
 1. **保持钻孔控制区的形态和深度不变**：
    - 参考图中由钻孔数据明确约束的**岩性分界线深度**必须严格保留。
-   - 每一层的**顶板高程和底板高程**必须与图3和图5剖面中显示的数值一致。
+   - 每一层的**顶板高程和底板高程**必须与剖面图中显示的数值一致。
    - 禁止将薄层"合并"或"抹掉"，每一条可见的岩性分界线都必须在结果中保留。
 2. **填充缺失区域**：
    - 地层延续性：同一岩性在空间上应保持连续。
@@ -1182,8 +1215,8 @@ def call_qwen_api_for_modeling(image_paths, color_map=None, api_key=QWEN_API_KEY
 【生成要求】
 1. **岩石纹理逼真，各岩性呈现其独特的地质质感**
 2. 各岩性严格使用上述对应颜色表达，颜色饱和度适中
-3. 保持图1的整体三维形态、图3的南北向剖面深度、图5的东西向剖面深度
-4. 图3和图5的岩性分界线在交点处深度必须一致
+3. 保持参考图的整体三维形态和剖面深度
+4. 正交剖面图的岩性分界线在交点处深度必须一致
 5. 地质体应呈现为完整连续的地质块体，边缘自然过渡
 6. **层位必须严格按深度从上到下排列，禁止上下颠倒或穿插**
 7. **深度标尺必须完整生成，且与地质体层位深度严格对应**
@@ -1192,12 +1225,17 @@ def call_qwen_api_for_modeling(image_paths, color_map=None, api_key=QWEN_API_KEY
 10. 图像风格为科学分析 + 符合地质真实的图片
 11. 输出为单张高质量的三维地质结构渲染图，分辨率不低于1024x1024
 """
-    # ========== 3. 构建 content 数组 ==========
+    # ========== 3. 构建 content 数组（压缩参考图以减少传输量） ==========
     content_list = []
+    from PIL import Image
     for path in image_paths:
-        with open(path, 'rb') as f:
-            b64 = base64.b64encode(f.read()).decode('utf-8')
-            content_list.append({"image": f"data:image/png;base64,{b64}"})
+        # 读取并压缩图片到 1024×1024，避免 JSON 负载过大导致连接超时
+        img = Image.open(path)
+        img.thumbnail((1024, 1024), Image.LANCZOS)
+        buf = io.BytesIO()
+        img.save(buf, format='PNG', optimize=True)
+        b64 = base64.b64encode(buf.getvalue()).decode('utf-8')
+        content_list.append({"image": f"data:image/png;base64,{b64}"})
     content_list.append({"text": geomodel_prompt})
 
     # ========== 5. 构建请求体（注意：messages 在 input 下面） ==========
@@ -2025,7 +2063,16 @@ def build_geological_bodies_with_volume_v2(loc_df, litho_df, survey_df,
         mask = Z_top > Z_bot
         Z_top_c = np.where(mask, Z_top, Z_bot)
         Z_bot_c = np.where(mask, Z_bot, Z_top)
-        
+
+        # 最小厚度约束：对已被 swap 的网格（原始 Z_top < Z_bot）施加最小厚度
+        # 防止穿层修复后产生厚度接近 0 的退化单元格（不影响边界自然尖灭区）
+        MIN_THICKNESS = 0.1  # 10cm
+        swapped = ~mask
+        thin_after_swap = (Z_top_c - Z_bot_c) < MIN_THICKNESS
+        fix = swapped & thin_after_swap & ~np.isnan(Z_top_c) & ~np.isnan(Z_bot_c)
+        if np.any(fix):
+            Z_bot_c = np.where(fix, Z_top_c - MIN_THICKNESS, Z_bot_c)
+
         # 统一用反归一化坐标存储
         bodies[lith] = {
             'X': xi_orig, 'Y': yi_orig,
@@ -2880,8 +2927,11 @@ def evaluate_rbf_loocv(x, y, z, rbf_function='multiquadric', smooth=0.01, epsilo
                 kwargs['epsilon'] = epsilon
 
             rbf = Rbf(x_train, y_train, z_train, **kwargs)
-            z_pred = rbf(x_n[i], y_n[i])
-            err = (z_pred - z_n[i]) * z_span
+            z_pred_val = float(rbf(x_n[i], y_n[i]))
+            # 检测数值不稳定：预测值远超出归一化范围（归一化数据在 [0,1]）
+            if not np.isfinite(z_pred_val) or abs(z_pred_val) > 10:
+                continue
+            err = (z_pred_val - float(z_n[i])) * z_span
             errors.append(err)
         except Exception:
             continue
@@ -2893,7 +2943,15 @@ def evaluate_rbf_loocv(x, y, z, rbf_function='multiquadric', smooth=0.01, epsilo
             'error': '所有点拟合均失败'
         }
 
-    errors_arr = np.array(errors)
+    # 二次过滤 NaN，防止 numpy copy 损坏（numpy 1.26.4 bug）
+    clean_errors = [e for e in errors if not np.isnan(e)]
+    if len(clean_errors) == 0:
+        return {
+            'rmse': None, 'mae': None, 'max_error': None,
+            'n_points': n, 'success': False,
+            'error': '所有有效误差值均为 NaN'
+        }
+    errors_arr = np.array(clean_errors)
     return {
         'rmse': float(np.sqrt(np.mean(errors_arr ** 2))),
         'mae': float(np.mean(np.abs(errors_arr))),
@@ -3025,7 +3083,11 @@ def evaluate_kriging_loocv(x, y, z, variogram_model='spherical'):
                 nlags=6, enable_plotting=False, verbose=False
             )
             z_pred, _ = ok.execute('points', [float(x[i])], [float(y[i])])
-            err = float(z_pred[0]) - z[i]
+            z_pred_val = float(z_pred[0])
+            # 检测数值不稳定（极端预测值）
+            if not np.isfinite(z_pred_val) or abs(z_pred_val) > 1e8:
+                continue
+            err = z_pred_val - z[i]
             errors.append(err)
         except Exception:
             continue
@@ -3037,7 +3099,15 @@ def evaluate_kriging_loocv(x, y, z, variogram_model='spherical'):
             'error': '所有点拟合均失败'
         }
 
-    errors_arr = np.array(errors)
+    # 二次过滤 NaN，防止 numpy copy 损坏（numpy 1.26.4 bug）
+    clean_errors = [e for e in errors if not np.isnan(e)]
+    if len(clean_errors) == 0:
+        return {
+            'rmse': None, 'mae': None, 'max_error': None,
+            'n_points': n, 'success': False,
+            'error': '所有有效误差值均为 NaN'
+        }
+    errors_arr = np.array(clean_errors)
     return {
         'rmse': float(np.sqrt(np.mean(errors_arr ** 2))),
         'mae': float(np.mean(np.abs(errors_arr))),
@@ -3184,4 +3254,335 @@ def optimize_kriging_params(
         'all_results': all_results,
         'success': True,
         'error': None
+    }
+
+
+# ==================== 模型质量评估 ====================
+
+def check_layer_intersection(bodies, threshold=None):
+    """
+    检查地质体顶底面是否穿层（顶面低于底面）。
+
+    参数:
+        bodies: build_geological_bodies_with_volume_v2 返回的 bodies
+        threshold: 穿层判定的最小差值（米），默认从 config 读取
+
+    返回:
+        dict 包含 has_intersection, total_cells, intersection_cells,
+             intersection_ratio, details
+    """
+    import numpy as np
+    from config import QUALITY_INTERSECTION_THRESHOLD, QUALITY_INTERSECTION_WARN_RATIO
+
+    if threshold is None:
+        threshold = QUALITY_INTERSECTION_THRESHOLD
+
+    all_details = []
+    total_cells = 0
+    intersection_cells = 0
+
+    for lith, data in bodies.items():
+        Z_top = data['Z_top']
+        Z_bot = data['Z_bot']
+        X = data['X']
+        Y = data['Y']
+
+        # 有效网格
+        valid = ~np.isnan(Z_top) & ~np.isnan(Z_bot)
+        n_valid = int(np.sum(valid))
+        total_cells += n_valid
+
+        if n_valid == 0:
+            continue
+
+        # 穿层：顶面 < 底面
+        gap = Z_top - Z_bot  # 正常应为正
+        intersected = valid & (gap < -threshold)
+        n_intersected = int(np.sum(intersected))
+        intersection_cells += n_intersected
+
+        # 记录穿层位置（最多5个）
+        if n_intersected > 0:
+            idx = np.where(intersected)
+            for i, j in zip(idx[0][:5], idx[1][:5]):
+                all_details.append({
+                    'layer': lith,
+                    'x': float(X[i, j]),
+                    'y': float(Y[i, j]),
+                    'gap': float(gap[i, j])
+                })
+
+    ratio = intersection_cells / total_cells if total_cells > 0 else 0
+
+    return {
+        'has_intersection': ratio > QUALITY_INTERSECTION_WARN_RATIO,
+        'total_cells': total_cells,
+        'intersection_cells': intersection_cells,
+        'intersection_ratio': round(float(ratio), 6),
+        'details': all_details
+    }
+
+
+def check_thickness_variation(bodies, max_gradient=None, min_thickness=None, max_thickness=None):
+    """
+    检查单层厚度的空间变化是否平滑。
+
+    参数:
+        bodies: 地质体 bodies 字典
+        max_gradient: 允许的最大厚度变化率（m/m）
+        min_thickness: 最小厚度（米）
+        max_thickness: 最大厚度（米）
+
+    返回:
+        dict 包含 has_anomaly, layers（每层的厚度统计）
+    """
+    import numpy as np
+    from config import (
+        QUALITY_THICKNESS_MAX_GRADIENT,
+        QUALITY_THICKNESS_MIN,
+        QUALITY_THICKNESS_MAX
+    )
+
+    if max_gradient is None:
+        max_gradient = QUALITY_THICKNESS_MAX_GRADIENT
+    if min_thickness is None:
+        min_thickness = QUALITY_THICKNESS_MIN
+    if max_thickness is None:
+        max_thickness = QUALITY_THICKNESS_MAX
+
+    results = []
+
+    for lith, data in bodies.items():
+        Z_top = data['Z_top']
+        Z_bot = data['Z_bot']
+        X = data['X']
+        Y = data['Y']
+
+        # 厚度
+        thickness = Z_top - Z_bot
+        thickness[thickness < 0] = np.nan
+        valid = ~np.isnan(thickness)
+
+        if np.sum(valid) == 0:
+            continue
+
+        # 网格间距
+        dx = np.abs(X[0, 1] - X[0, 0]) if X.shape[1] > 1 else 1.0
+        dy = np.abs(Y[1, 0] - Y[0, 0]) if Y.shape[0] > 1 else 1.0
+
+        # 厚度梯度
+        try:
+            grad_x = np.abs(np.gradient(np.nan_to_num(thickness), axis=1)) / dx
+            grad_y = np.abs(np.gradient(np.nan_to_num(thickness), axis=0)) / dy
+            grad = np.maximum(grad_x, grad_y)
+            grad[~valid] = np.nan
+            max_grad_val = float(np.nanmax(grad)) if np.any(~np.isnan(grad)) else 0
+            anomaly = valid & (grad > max_gradient)
+            anomaly_count = int(np.sum(anomaly))
+        except Exception:
+            max_grad_val = 0
+            anomaly_count = 0
+
+        # 厚度范围检查
+        thick_valid = thickness[valid]
+        t_min = float(np.min(thick_valid)) if len(thick_valid) > 0 else 0
+        t_max = float(np.max(thick_valid)) if len(thick_valid) > 0 else 0
+        t_mean = float(np.mean(thick_valid)) if len(thick_valid) > 0 else 0
+
+        results.append({
+            'layer': lith,
+            'max_gradient': round(max_grad_val, 4),
+            'anomaly_count': anomaly_count,
+            'thickness_min': round(t_min, 2),
+            'thickness_max': round(t_max, 2),
+            'thickness_mean': round(t_mean, 2),
+            'has_anomaly': anomaly_count > 0
+        })
+
+    return {
+        'has_anomaly': any(r['has_anomaly'] for r in results),
+        'layers': results
+    }
+
+
+def detect_pinch_out(bodies, min_thickness=None, reasonable_ratio=None):
+    """
+    识别尖灭区（厚度 < 阈值的区域）。
+
+    参数:
+        bodies: 地质体 bodies 字典
+        min_thickness: 尖灭判定厚度阈值（米）
+        reasonable_ratio: 合理尖灭比例阈值
+
+    返回:
+        dict 包含 layers（每层的尖灭统计）
+    """
+    import numpy as np
+    from config import QUALITY_PINCHOUT_MIN_THICKNESS, QUALITY_PINCHOUT_REASONABLE_RATIO
+
+    if min_thickness is None:
+        min_thickness = QUALITY_PINCHOUT_MIN_THICKNESS
+    if reasonable_ratio is None:
+        reasonable_ratio = QUALITY_PINCHOUT_REASONABLE_RATIO
+
+    results = []
+
+    for lith, data in bodies.items():
+        Z_top = data['Z_top']
+        Z_bot = data['Z_bot']
+
+        thickness = Z_top - Z_bot
+        valid = ~np.isnan(thickness)
+
+        if np.sum(valid) == 0:
+            continue
+
+        # 尖灭区：厚度 < 阈值
+        pinch = valid & (thickness < min_thickness)
+        pinch_count = int(np.sum(pinch))
+        n_valid = int(np.sum(valid))
+        pinch_ratio = pinch_count / n_valid if n_valid > 0 else 0
+
+        # 判断是否为合理尖灭
+        is_reasonable = pinch_ratio > reasonable_ratio
+
+        results.append({
+            'layer': lith,
+            'pinch_ratio': round(float(pinch_ratio), 6),
+            'pinch_count': pinch_count,
+            'is_reasonable': is_reasonable,
+            'comment': '合理尖灭（透镜状边缘）' if is_reasonable else '存在硬切割，建议检查'
+        })
+
+    return {'layers': results}
+
+
+def evaluate_model_quality(bodies, litho_df=None):
+    """
+    综合评估模型质量，输出报告。
+
+    参数:
+        bodies: 地质体 bodies 字典
+        litho_df: 岩性表 DataFrame（当前未使用，保留参数用于扩展）
+
+    返回:
+        dict 包含各检查项结果、综合评分、评级、扣分项和已知局限
+    """
+    from config import (
+        QUALITY_SCORE_PENALTY_INTERSECTION,
+        QUALITY_SCORE_PENALTY_THICKNESS,
+        QUALITY_SCORE_PENALTY_PINCHOUT,
+        QUALITY_GRADE_EXCELLENT,
+        QUALITY_GRADE_GOOD,
+        QUALITY_GRADE_FAIR
+    )
+
+    intersection = check_layer_intersection(bodies)
+    thickness = check_thickness_variation(bodies)
+    pinch_out = detect_pinch_out(bodies)
+
+    # 综合评分
+    score = 100
+    penalties = []
+
+    if intersection['has_intersection']:
+        score -= QUALITY_SCORE_PENALTY_INTERSECTION
+        penalties.append(f"层间穿层：-{QUALITY_SCORE_PENALTY_INTERSECTION}分")
+
+    if thickness['has_anomaly']:
+        score -= QUALITY_SCORE_PENALTY_THICKNESS
+        penalties.append(f"厚度异常：-{QUALITY_SCORE_PENALTY_THICKNESS}分")
+
+    # 尖灭异常：合理尖灭不扣分，硬切割扣分
+    pinch_anomaly = any(not r['is_reasonable'] for r in pinch_out['layers'])
+    if pinch_anomaly:
+        score -= QUALITY_SCORE_PENALTY_PINCHOUT
+        penalties.append(f"尖灭异常：-{QUALITY_SCORE_PENALTY_PINCHOUT}分")
+
+    score = max(0, score)
+
+    if score >= QUALITY_GRADE_EXCELLENT:
+        grade = '优秀'
+        grade_color = '#2E7D32'
+    elif score >= QUALITY_GRADE_GOOD:
+        grade = '良好'
+        grade_color = '#1565C0'
+    elif score >= QUALITY_GRADE_FAIR:
+        grade = '一般'
+        grade_color = '#F57C00'
+    else:
+        grade = '差'
+        grade_color = '#C62828'
+
+    # 已知局限
+    limitations = []
+    if intersection['has_intersection']:
+        limitations.append('层间存在穿层现象，需检查数据或调整插值参数')
+    if thickness['has_anomaly']:
+        limitations.append('部分区域厚度变化剧烈，可能存在插值失真')
+    limitations.append('未考虑断层影响（如研究区存在断层，建议在断层附近补充钻孔）')
+    limitations.append('未考虑垂向各向异性（2D 插值方法的固有局限）')
+
+    # ========== 参数调整建议 ==========
+    recommendations = []
+
+    # 穿层建议
+    if intersection['has_intersection']:
+        recommendations.append({
+            'type': 'intersection',
+            'severity': 'warning',
+            'text': '层间穿层说明插值在局部区域产生了震荡。建议：① 降低网格分辨率(GRID_RESOLUTION) ② 在穿层区域补充钻孔控制点 ③ 切换为克里金插值（平滑性更好）'
+        })
+
+    # 厚度梯度异常建议
+    if thickness['has_anomaly']:
+        highly_anomalous = any(r['anomaly_count'] > 20 for r in thickness['layers'])
+        smooth_advice = '增大 RBF_SMOOTH 参数值(建议 0.5~2.0)' if highly_anomalous else '适当增大 RBF_SMOOTH'
+        recommendations.append({
+            'type': 'thickness',
+            'severity': 'warning',
+            'text': f'厚度梯度异常区域可能存在插值失真。建议：① {smooth_advice} ② 在异常区域加密钻孔控制点 ③ 更换核函数(如 thin_plate→multiquadric)'
+        })
+
+    # 尖灭建议
+    pinch_hard = [r for r in pinch_out['layers'] if not r['is_reasonable']]
+    if pinch_hard:
+        layers_str = '、'.join([r['layer'] for r in pinch_hard])
+        recommendations.append({
+            'type': 'pinchout',
+            'severity': 'warning',
+            'text': f'岩性 {layers_str} 存在硬切割尖灭。建议检查边界控制点是否过少，或增大网格分辨率使尖灭过渡更平滑'
+        })
+
+    # 若整体评分良好，给出肯定建议
+    if score >= QUALITY_GRADE_EXCELLENT:
+        recommendations.append({
+            'type': 'overall',
+            'severity': 'info',
+            'text': '模型质量优秀，当前插值参数配置合理，无需调整'
+        })
+    elif score >= QUALITY_GRADE_GOOD:
+        recommendations.append({
+            'type': 'overall',
+            'severity': 'info',
+            'text': '模型质量良好，可尝试微调参数进一步提升：如适当降低网格分辨率或增大 RBF 平滑度'
+        })
+
+    # 通用建议
+    recommendations.append({
+        'type': 'general',
+        'severity': 'info',
+        'text': '提示：模型质量评估仅基于已有钻孔数据的插值结果，建议结合地质先验知识综合判断。如需更高精度，应考虑在关键区域补充钻孔'
+    })
+
+    return {
+        'layer_intersection': intersection,
+        'thickness_variation': thickness,
+        'pinch_out': pinch_out,
+        'overall_score': score,
+        'overall_grade': grade,
+        'grade_color': grade_color,
+        'penalties': penalties,
+        'limitations': limitations,
+        'recommendations': recommendations
     }

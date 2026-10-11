@@ -69,9 +69,14 @@
                                 <span class="icon">📊</span> 克里金参数分析
                             </button>
                         </div>
-                        <button class="btn btn-sidebar btn-sidebar-full" id="btnModelParams" disabled>
-                            <span class="icon">⚙️</span> 建模参数
-                        </button>
+                        <div class="sidebar-row">
+                            <button class="btn btn-sidebar" id="btnQualityCheck" disabled>
+                                <span class="icon">✅</span> 模型质量评估
+                            </button>
+                            <button class="btn btn-sidebar" id="btnModelParams" disabled>
+                                <span class="icon">⚙️</span> 建模参数
+                            </button>
+                        </div>
                         <div id="krigingParamTimer" class="btn-timer-container"></div>
                         <div id="rbfTimer" class="btn-timer-container"></div>
                     </div>
@@ -129,7 +134,8 @@
                         </span>
                     </div>
                     <div class="status-body" id="statusBody">
-                        <div class="status-message" id="statusMessage">加载模板数据...</div>
+                        <div class="status-current" id="statusCurrent">加载模板数据...</div>
+                        <div class="status-history" id="statusHistory"></div>
                     </div>
                 </div>
             </aside>

@@ -87,7 +87,7 @@ def mock_processors(monkeypatch):
         }
 
     # ---- AI 建模 ----
-    def mock_qwen_modeling(image_paths, color_map=None, **kw):
+    def mock_qwen_modeling(image_paths, view_metas=None, color_map=None, **kw):
         return (['http://mock-url.com/img1.png', 'http://mock-url.com/img2.png'], None)
 
     # ---- 多视角 AI ----
@@ -149,7 +149,7 @@ def mock_processors(monkeypatch):
     monkeypatch.setattr('mineDrillApp.generate_drill_views', mock_drill_views)
     monkeypatch.setattr('mineDrillApp.draw_single_model_view', mock_draw_model_view)
     monkeypatch.setattr('mineDrillApp.build_geological_bodies_with_volume_v2', mock_build_bodies)
-    monkeypatch.setattr('mineDrillApp.add_view_order_watermark', lambda fig, order, label='': None)
+    monkeypatch.setattr('mineDrillApp.add_view_label_watermark', lambda fig, label='': None)
     monkeypatch.setattr('mineDrillApp.generate_drill_model_only', mock_drill_model_only)
     monkeypatch.setattr('mineDrillApp.generate_interactive_model', mock_interactive_model)
     monkeypatch.setattr('mineDrillApp.perform_kriging_analysis', mock_kriging_analysis)
@@ -386,6 +386,17 @@ class TestAIModeling:
         """没有参考图时应返回 400"""
         resp = client.post('/api/ai_modeling', json={
             'session_id': 'test_ai', 'color_map': {'#FF0000': '矿化带'},
+            'file_path': None,
+            'selected_views': ['main_view', 'east_west_section', 'north_south_section']
+        })
+        assert resp.status_code == 400
+        data = resp.get_json()
+        assert 'error' in data
+
+    def test_missing_selected_views(self, client, mock_processors):
+        """缺少 selected_views 时应返回 400"""
+        resp = client.post('/api/ai_modeling', json={
+            'session_id': 'test_ai', 'color_map': {'#FF0000': '矿化带'},
             'file_path': None
         })
         assert resp.status_code == 400
@@ -399,21 +410,23 @@ class TestAIModeling:
         from PIL import Image
         output_dir = get_session_output_dir('test_ai_ref')
         os.makedirs(output_dir, exist_ok=True)
-        # AI_REFERENCE_IMGS = [1, 3, 5]; 按 order 生成对应的 unlabeled 图
-        for fname in ['unlabeled_01_main_view.png', 'unlabeled_03_west_east_view.png',
-                     'unlabeled_05_north_south_view.png']:
+        # 按默认视图生成对应的 unlabeled 图
+        for fname in ['unlabeled_01_main_view.png', 'unlabeled_02_east_west_section.png',
+                     'unlabeled_03_north_south_section.png']:
             img = Image.new('RGB', (100, 100), (255, 0, 0))
             img.save(os.path.join(output_dir, fname))
-        # 也需要 labeled 图供评分逻辑使用
-        for fname in ['labeled_01_main_view.png', 'labeled_02_south_north_view.png',
-                     'labeled_03_west_east_view.png', 'labeled_05_north_south_view.png']:
+        # 也需要 labeled 图供评分逻辑使用（覆盖全部6个视角）
+        for fname in ['labeled_01_main_view.png', 'labeled_02_east_west_section.png',
+                     'labeled_03_north_south_section.png', 'labeled_04_top_down_view.png',
+                     'labeled_05_supplementary_view.png', 'labeled_06_iso_view.png']:
             img = Image.new('RGB', (100, 100), (255, 0, 0))
             img.save(os.path.join(output_dir, fname))
 
         resp = client.post('/api/ai_modeling', json={
             'session_id': 'test_ai_ref',
             'color_map': {'#FF0000': '矿化带'},
-            'file_path': create_sample_excel
+            'file_path': create_sample_excel,
+            'selected_views': ['main_view', 'east_west_section', 'north_south_section']
         })
         assert resp.status_code == 200
         data = resp.get_json()
@@ -452,8 +465,7 @@ class TestMultiviewAI:
         # 创建 Python 参考图（代码搜索模式: f'unlabeled_{order:02d}_{view["name"]}'）
         output_dir = get_session_output_dir('test_mv_success')
         os.makedirs(output_dir, exist_ok=True)
-        for fname in ['unlabeled_01_main_view.png', 'unlabeled_02_south_north_view.png',
-                     'unlabeled_03_west_east_view.png']:
+        for fname in ['unlabeled_01_main_view.png', 'unlabeled_03_north_south_section.png']:
             Image.new('RGB', (100, 100)).save(os.path.join(output_dir, fname))
 
         resp = client.post('/api/multiview_ai', json={

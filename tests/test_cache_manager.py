@@ -18,7 +18,7 @@ def setup(override_config):
 @pytest.fixture
 def cache_mgr():
     """延迟导入 cache_manager"""
-    import cache_manager as cm
+    from handlers import cache_manager as cm
     return cm
 
 

@@ -15,7 +15,7 @@ def setup(override_config):
 
 @pytest.fixture
 def analysis_mgr():
-    import analysis_manager as am
+    from handlers import analysis_manager as am
     return am
 
 

@@ -15,7 +15,7 @@ def setup(override_config):
     import matplotlib
     matplotlib.use('Agg')
     # 清理 sessions 状态
-    from mineDrillApp import session_last_active, log_storage
+    from handlers.app_utils import session_last_active, log_storage
     session_last_active.clear()
     log_storage.clear()
     pass
@@ -79,7 +79,7 @@ class TestUploadRoute:
 
     def test_upload_old_session_cleanup(self, client, create_sample_excel):
         """上传时传递 old_session 参数应触发清理"""
-        from mineDrillApp import session_last_active
+        from handlers.app_utils import session_last_active
         # 先上传第一个文件获取 session_id
         with open(create_sample_excel, 'rb') as f:
             resp1 = client.post('/api/upload', data={
@@ -225,7 +225,7 @@ class TestLogRoutes:
     """测试日志路由"""
 
     def test_get_logs_existing(self, client):
-        from mineDrillApp import add_log
+        from handlers.app_utils import add_log
         add_log('test_log_session', 'test message')
         resp = client.get('/api/logs/test_log_session')
         assert resp.status_code == 200

@@ -17,7 +17,7 @@ def setup(override_config):
 @pytest.fixture
 def params_mgr():
     """延迟导入 params_manager，确保路径 monkeypatch 已生效"""
-    import params_manager as pm
+    from handlers import params_manager as pm
     return pm
 
 

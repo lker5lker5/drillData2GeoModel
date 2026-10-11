@@ -2098,7 +2098,7 @@ def build_geological_bodies_with_volume_v2(loc_df, litho_df, survey_df,
     # ========== 记录 RBF 分析数据 ==========
     try:
         if session_id:
-            from analysis_manager import record_rbf_data, _numpy_to_list
+            from .analysis_manager import record_rbf_data, _numpy_to_list
             from config import RBF_FUNCTION, RBF_SMOOTH, GRID_RESOLUTION
 
             layers_info = []

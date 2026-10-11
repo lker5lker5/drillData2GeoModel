@@ -12,7 +12,7 @@ from PIL import Image
 
 @pytest.fixture
 def scoring_mgr():
-    import scoring as sc
+    from handlers import scoring as sc
     return sc
 
 
@@ -223,7 +223,7 @@ class TestColorHistNormalization:
 
     def test_zero_norm_handled(self, scoring_mgr):
         """全黑图片的直方图 L2 范数为 0，不应除零"""
-        import scoring as sc_module
+        from handlers import scoring as sc_module
         img = np.zeros((64, 64, 3), dtype=np.uint8)
         # _color_hist 是内部函数，但可以通过参数验证
         score = sc_module.compute_color_similarity(img, img)

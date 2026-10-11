@@ -20,7 +20,7 @@ def setup(override_config):
 @pytest.fixture
 def proc():
     """延迟导入 processors"""
-    import processors as p
+    from handlers import processors as p
     return p
 
 

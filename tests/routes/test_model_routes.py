@@ -14,7 +14,7 @@ from io import BytesIO
 def setup(override_config):
     import matplotlib
     matplotlib.use('Agg')
-    from mineDrillApp import session_last_active, log_storage
+    from handlers.app_utils import session_last_active, log_storage
     session_last_active.clear()
     log_storage.clear()
 
@@ -122,45 +122,37 @@ def mock_processors(monkeypatch):
         return image_paths
 
     # ---- kriging_surface_analysis 额外 mock（函数内 import processors 的版本） ----
-    import processors as proc_mod
-    monkeypatch.setattr('processors.compute_trajectory', lambda df: (
+    from handlers import processors as proc_mod
+    monkeypatch.setattr('handlers.processors.compute_trajectory', lambda df: (
         np.array([0., 100.]), np.array([0., 0.]), np.array([0., 0.]), np.array([100., 0.])
     ))
-    monkeypatch.setattr('processors.get_interpolated_coords', lambda a,b,c,d,e: (
+    monkeypatch.setattr('handlers.processors.get_interpolated_coords', lambda a,b,c,d,e: (
         np.array([0., 50., 100.]), np.array([0., 0., 0.]), np.array([0., 0., 0.])
     ))
-    monkeypatch.setattr('processors.generate_kriging_analysis_for_layer', lambda **kw: {
+    monkeypatch.setattr('handlers.processors.generate_kriging_analysis_for_layer', lambda **kw: {
         'comparison_path': '', 'layer_name': '矿化带', 'part_name': '顶面',
         'analysis_text': 'test', 'point_counts': {}
     })
-    monkeypatch.setattr('processors.plot_kriging_comparison', lambda *a, **kw: '/tmp/mock_plot.png')
-    monkeypatch.setattr('processors.transform_xy_to_lonlat', lambda x, y, zone=None: (120.0, 30.0))
+    monkeypatch.setattr('handlers.processors.plot_kriging_comparison', lambda *a, **kw: '/tmp/mock_plot.png')
+    monkeypatch.setattr('handlers.processors.transform_xy_to_lonlat', lambda x, y, zone=None: (120.0, 30.0))
 
-    # ---- processors 级 mock（函数内 from processors import X 会绕过 mineDrillApp 级别） ----
-    monkeypatch.setattr('processors.call_qwen_api_for_multiview', mock_qwen_multiview)
-    monkeypatch.setattr('processors.add_annotations_to_ai_image', mock_add_annotations)
-    monkeypatch.setattr('processors.call_qwen_api_for_modeling', mock_qwen_modeling)
-    monkeypatch.setattr('processors.plot_geometry_with_black_edges', mock_plot_geometry)
-    monkeypatch.setattr('processors.generate_ai_texture_for_single_view', mock_ai_texture)
-    monkeypatch.setattr('processors.composite_ai_texture_with_geometry', mock_composite)
-    monkeypatch.setattr('processors.unify_multiview_color_tones', mock_unify_colors)
+    # ---- processors 级 mock（也覆盖 handlers 中 from .processors import * 的引用） ----
+    monkeypatch.setattr('handlers.processors.call_qwen_api_for_multiview', mock_qwen_multiview)
+    monkeypatch.setattr('handlers.processors.add_annotations_to_ai_image', mock_add_annotations)
+    monkeypatch.setattr('handlers.processors.call_qwen_api_for_modeling', mock_qwen_modeling)
+    monkeypatch.setattr('handlers.processors.plot_geometry_with_black_edges', mock_plot_geometry)
+    monkeypatch.setattr('handlers.processors.generate_ai_texture_for_single_view', mock_ai_texture)
+    monkeypatch.setattr('handlers.processors.composite_ai_texture_with_geometry', mock_composite)
+    monkeypatch.setattr('handlers.processors.unify_multiview_color_tones', mock_unify_colors)
+    monkeypatch.setattr('handlers.processors.add_view_label_watermark', lambda fig, label='': None)
 
-    # ---- 安装 mock ----
-    monkeypatch.setattr('mineDrillApp.generate_drill_views', mock_drill_views)
-    monkeypatch.setattr('mineDrillApp.draw_single_model_view', mock_draw_model_view)
-    monkeypatch.setattr('mineDrillApp.build_geological_bodies_with_volume_v2', mock_build_bodies)
-    monkeypatch.setattr('mineDrillApp.add_view_label_watermark', lambda fig, label='': None)
-    monkeypatch.setattr('mineDrillApp.generate_drill_model_only', mock_drill_model_only)
-    monkeypatch.setattr('mineDrillApp.generate_interactive_model', mock_interactive_model)
-    monkeypatch.setattr('mineDrillApp.perform_kriging_analysis', mock_kriging_analysis)
-    monkeypatch.setattr('mineDrillApp.call_qwen_api_for_modeling', mock_qwen_modeling)
-    monkeypatch.setattr('mineDrillApp.call_qwen_api_for_multiview', mock_qwen_multiview)
-    monkeypatch.setattr('mineDrillApp.add_annotations_to_ai_image', mock_add_annotations)
-    monkeypatch.setattr('mineDrillApp.plot_geometry_with_black_edges', mock_plot_geometry)
-    monkeypatch.setattr('mineDrillApp.generate_ai_texture_for_single_view', mock_ai_texture)
-    monkeypatch.setattr('mineDrillApp.composite_ai_texture_with_geometry', mock_composite)
-    monkeypatch.setattr('mineDrillApp.unify_multiview_color_tones', mock_unify_colors)
-    monkeypatch.setattr('mineDrillApp.transform_xy_to_lonlat', lambda a, b, zone=None: (120.0, 30.0))
+    # ---- handler 级 mock（handlers 中 from .processors import * 的副本） ----
+    monkeypatch.setattr('handlers.user_handler.generate_drill_views', mock_drill_views)
+    monkeypatch.setattr('handlers.user_handler.draw_single_model_view', mock_draw_model_view)
+    monkeypatch.setattr('handlers.user_handler.build_geological_bodies_with_volume_v2', mock_build_bodies)
+    monkeypatch.setattr('handlers.user_handler.generate_drill_model_only', mock_drill_model_only)
+    monkeypatch.setattr('handlers.user_handler.generate_interactive_model', mock_interactive_model)
+    monkeypatch.setattr('handlers.data_handler.perform_kriging_analysis', mock_kriging_analysis)
 
     # ---- 模拟 requests.get（AI 路由下载图片时使用） ----
     from unittest.mock import MagicMock
@@ -406,7 +398,7 @@ class TestAIModeling:
     def test_with_reference_images(self, client, create_sample_excel, mock_processors):
         """先生成建模图获得参考图，再调用 AI 建模"""
         # Step 1: 生成建模图（写入图像文件以提供参考图）
-        from mineDrillApp import get_session_output_dir
+        from handlers.app_utils import get_session_output_dir
         from PIL import Image
         output_dir = get_session_output_dir('test_ai_ref')
         os.makedirs(output_dir, exist_ok=True)
@@ -458,7 +450,7 @@ class TestMultiviewAI:
 
     def test_success(self, client, temp_dir, mock_processors):
         from PIL import Image
-        from mineDrillApp import get_session_output_dir
+        from handlers.app_utils import get_session_output_dir
         # 创建主锚图
         ai_img = os.path.join(temp_dir, 'best_ai.png')
         Image.new('RGB', (100, 100)).save(ai_img)
@@ -536,7 +528,7 @@ class TestAnalysisData:
         assert data.get('success') is False
 
     def test_has_rbf_data(self, client, override_config):
-        from analysis_manager import record_rbf_data
+        from handlers.analysis_manager import record_rbf_data
         record_rbf_data('test_analysis_rbf', {'func': 'm'}, [{'layer_name': '矿化带', 'stats': {}}])
         resp = client.get('/api/analysis_data?session_id=test_analysis_rbf')
         assert resp.status_code == 200
@@ -559,7 +551,7 @@ class TestExportAnalysis:
         assert resp.status_code == 400
 
     def test_export_zip(self, client):
-        from analysis_manager import record_rbf_data
+        from handlers.analysis_manager import record_rbf_data
         record_rbf_data('test_export', {'func': 'm'}, [
             {'layer_name': '矿化带', 'part_name': '顶面',
              'stats': {'n_points': 10, 'min': 100, 'max': 200, 'mean': 150, 'std': 25}}

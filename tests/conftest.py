@@ -161,7 +161,7 @@ def runner(app):
 def create_sample_excel(temp_dir):
     """
     创建一个符合代码约定的 Excel 测试文件。
-    列名需匹配 processors.py / mineDrillApp.py 中的实际使用。
+    列名需匹配 processors.py / main.py 中的实际使用。
     """
     import pandas as pd
     loc = pd.DataFrame({

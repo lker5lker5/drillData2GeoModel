@@ -68,6 +68,15 @@ if __name__ == '__main__':
             elif os.path.isdir(item_path) and len(item) != 8:
                 shutil.rmtree(item_path, ignore_errors=True)
                 cleaned_count += 1
+        # 同步清空 uploads/ 文件夹
+        for item in os.listdir(UPLOAD_FOLDER):
+            item_path = os.path.join(UPLOAD_FOLDER, item)
+            if os.path.isfile(item_path):
+                os.remove(item_path)
+                cleaned_count += 1
+            elif os.path.isdir(item_path):
+                shutil.rmtree(item_path, ignore_errors=True)
+                cleaned_count += 1
         if cleaned_count > 0:
             print(f'==> 启动时清理了 {cleaned_count} 个遗留文件/目录')
     except Exception as e:

@@ -22,7 +22,7 @@ TEMPLATE_FILE = os.path.join(TEMPLATE_FOLDER, 'drill_data_template.xlsx')
 
 # ==================== 地图与坐标转换 ====================
 ZJ_TIANDITU_HOST = 'api.tianditu.gov.cn'
-ZJ_TIANDITU_KEY = os.environ.get('ZJ_TIANDITU_KEY', 'bfc9dea0d2d01bf8b47ded0136142bf0')
+ZJ_TIANDITU_KEY = os.environ.get('ZJ_TIANDITU_KEY')
 
 # ==================== 绘图配置 =========================
 FIGURE_DPI = 300

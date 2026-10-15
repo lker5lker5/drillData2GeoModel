@@ -3976,6 +3976,9 @@ document.addEventListener('DOMContentLoaded', function() {
     initModelParamsButton();
     initResultTabs();
     setStatus('已加载模板数据，可查看下方预览', 'info');
+
+    // 页面加载/刷新时清空 uploads/ 文件夹
+    fetch('/api/clear_uploads', { method: 'POST' }).catch(function() {});
 });
 
 
@@ -4526,31 +4529,41 @@ document.addEventListener('keydown', (e) => {
 const btnNewSession = document.getElementById('btnNewSession');
 if (btnNewSession) {
     btnNewSession.addEventListener('click', async () => {
-        if (!sessionId) {
-            // 如果没有活跃 session，直接重置页面
-            resetToInitialState();
-            setStatus('==> 已重置，请上传数据文件', 'success');
-            return;
-        }
-
         const sidToClean = sessionId;
         // 先清理前端状态
         resetToInitialState();
 
+        // 清空 uploads/ 文件夹所有内容
         try {
-            const resp = await fetch('/api/cleanup_session', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ session_id: sidToClean })
-            });
+            await fetch('/api/clear_uploads', { method: 'POST' });
+        } catch (e) {}
+        // 清理当前 session 的服务端数据
+        if (sidToClean) {
+            try {
+                await fetch('/api/cleanup_session', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ session_id: sidToClean })
+                });
+            } catch (e) {}
+        }
+        setStatus('==> 已清理所有数据，请上传新的数据文件', 'success');
+    });
+}
+
+// ==================== 清除历史记录 ====================
+const btnClearHistory = document.getElementById('btnClearHistory');
+if (btnClearHistory) {
+    btnClearHistory.addEventListener('click', async () => {
+        if (!confirm('确定要清空所有历史输出吗？此操作不可撤销。')) return;
+        try {
+            const resp = await fetch('/api/clear_outputs', { method: 'POST' });
             const data = await resp.json();
-            if (data.success) {
-                setStatus('==> 已清理当前会话数据，请上传新的数据文件', 'success');
-            } else {
-                setStatus('==> 已重置前端，后台清理完成', 'success');
-            }
+            // 同步重置前端状态
+            resetToInitialState();
+            setStatus('==> 已清空所有历史输出（' + (data.cleaned || 0) + ' 项）', 'success');
         } catch (e) {
-            setStatus('==> 已重置前端', 'success');
+            setStatus('!!! 清空历史记录失败', 'error');
         }
     });
 }

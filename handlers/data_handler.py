@@ -321,6 +321,44 @@ def register_routes(app):
         session_last_active.clear()
         log_storage.clear()
         return jsonify({'success': True})
+
+    @app.route('/api/clear_uploads', methods=['POST'])
+    def clear_uploads_api():
+        """清空 uploads/ 文件夹所有内容"""
+        import shutil
+        cleaned = 0
+        if os.path.exists(UPLOAD_FOLDER):
+            for item in os.listdir(UPLOAD_FOLDER):
+                item_path = os.path.join(UPLOAD_FOLDER, item)
+                try:
+                    if os.path.isfile(item_path) or os.path.islink(item_path):
+                        os.remove(item_path)
+                    elif os.path.isdir(item_path):
+                        shutil.rmtree(item_path, ignore_errors=True)
+                    cleaned += 1
+                except Exception:
+                    pass
+        return jsonify({'success': True, 'cleaned': cleaned})
+
+    @app.route('/api/clear_outputs', methods=['POST'])
+    def clear_outputs_api():
+        """清空 outputs/ 文件夹所有内容"""
+        import shutil
+        cleaned = 0
+        if os.path.exists(OUTPUT_FOLDER):
+            for item in os.listdir(OUTPUT_FOLDER):
+                item_path = os.path.join(OUTPUT_FOLDER, item)
+                try:
+                    if os.path.isfile(item_path) or os.path.islink(item_path):
+                        os.remove(item_path)
+                    elif os.path.isdir(item_path):
+                        shutil.rmtree(item_path, ignore_errors=True)
+                    cleaned += 1
+                except Exception:
+                    pass
+        session_last_active.clear()
+        log_storage.clear()
+        return jsonify({'success': True, 'cleaned': cleaned})
     
     
     

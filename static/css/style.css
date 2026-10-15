@@ -31,16 +31,36 @@ body {
     flex-wrap: wrap;
 }
 
-.app-header h1 {
+.header-left h1 {
     font-size: 24px;
     font-weight: 700;
     margin: 0;
 }
 
-.app-header p {
+.header-left p {
     font-size: 14px;
     opacity: 0.8;
     margin: 0;
+}
+
+.btn-clear-history {
+    background: rgba(255,255,255,0.15);
+    color: #fff;
+    border: 1px solid rgba(255,255,255,0.3);
+    border-radius: 6px;
+    padding: 8px 16px;
+    font-size: 13px;
+    cursor: pointer;
+    transition: background 0.2s, border-color 0.2s;
+    white-space: nowrap;
+    flex-shrink: 0;
+}
+.btn-clear-history:hover {
+    background: rgba(255,255,255,0.25);
+    border-color: rgba(255,255,255,0.5);
+}
+.btn-clear-history:active {
+    background: rgba(255,255,255,0.35);
 }
 
 /* ===== 主布局（左右结构） ===== */

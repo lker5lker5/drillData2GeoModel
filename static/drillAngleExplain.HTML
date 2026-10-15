@@ -3,192 +3,289 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>钻孔三维角度关系演示 (优化版)</title>
+    <title>钻孔三维角度关系演示</title>
     <style>
-        body { margin: 0; overflow: hidden; font-family: 'Microsoft YaHei', sans-serif; background-color: #f0f0f0; }
-        
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            margin: 0;
+            overflow: hidden;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'PingFang SC', 'Microsoft YaHei', sans-serif;
+            background: #f0f2f5;
+            color: #333;
+        }
+
         #loading {
             position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
-            font-size: 24px; color: #666; font-weight: bold; pointer-events: none;
+            font-size: 15px; color: #888; font-weight: 500; pointer-events: none;
             z-index: 100; transition: opacity 0.5s;
+            background: rgba(255,255,255,0.92); padding: 12px 28px;
+            border-radius: 8px; box-shadow: 0 2px 12px rgba(0,0,0,0.08);
         }
 
         #info {
-            position: absolute;
-            top: 10px;
-            left: 10px;
-            background: rgba(255, 255, 255, 0.95);
-            padding: 15px;
-            border-radius: 8px;
-            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
-            width: 320px;
-            pointer-events: auto;
-            z-index: 10;
+            position: absolute; top: 16px; left: 16px; width: 320px;
+            pointer-events: auto; z-index: 10;
+            background: #fff; border-radius: 12px;
+            box-shadow: 0 2px 12px rgba(0,0,0,0.08); overflow: hidden;
         }
-        h1 { margin: 0 0 10px 0; font-size: 18px; text-align: center; color: #333; }
-        .control-group { margin-bottom: 15px; border-bottom: 1px solid #eee; padding-bottom: 10px; }
-        .control-group:last-child { border-bottom: none; }
-        label { display: flex; justify-content: space-between; font-size: 14px; font-weight: bold; margin-bottom: 5px; }
-        input[type=range] { width: 100%; cursor: pointer; }
-        
-        .result-box {
-            background-color: #f9f9f9;
-            border: 1px solid #ddd;
-            padding: 10px;
-            margin-top: 5px;
-            border-radius: 4px;
-            font-size: 13px;
+        .panel-header {
+            background: #1a237e; color: #fff; padding: 10px 16px;
+            display: flex; align-items: center; gap: 8px;
         }
-        .color-box { display: inline-block; width: 12px; height: 12px; margin-right: 5px; border-radius: 2px; vertical-align: middle; }
-        
-        .legend-item { margin: 5px 0; display: flex; align-items: center; }
-        .val-display { float: right; color: #555; }
+        .panel-header .icon { font-size: 17px; }
+        .panel-header h1 { margin: 0; font-size: 15px; font-weight: 700; letter-spacing: 0.3px; }
 
+        .panel-body { padding: 14px 16px 16px; display: flex; flex-direction: column; gap: 14px; }
+
+        .control-group {
+            display: flex; flex-direction: column; gap: 6px;
+            padding: 8px 10px; margin: -8px -10px;
+            border-radius: 8px; cursor: pointer;
+            transition: background 0.3s, box-shadow 0.3s;
+            position: relative;
+        }
+        .control-group:hover { background: #f8f9fc; }
+        .control-group.active {
+            background: #e8eaf6;
+            box-shadow: inset 0 0 0 1px rgba(26,35,126,0.12);
+        }
+        .control-group::before {
+            content: ''; position: absolute; left: 0; top: 8px; bottom: 8px;
+            width: 3px; border-radius: 2px; opacity: 0; transition: opacity 0.3s;
+        }
+        .control-group.az-group::before  { background: #2E7D32; }
+        .control-group.dip-group::before { background: #F57C00; }
+        .control-group.active::before,
+        .control-group:hover::before { opacity: 1; }
+
+        .group-label {
+            display: flex; justify-content: space-between; align-items: baseline;
+            font-size: 13px; font-weight: 600;
+        }
+        .label-text { display: flex; align-items: center; gap: 6px; }
+        .label-dot {
+            width: 10px; height: 10px; border-radius: 50%;
+            display: inline-block; flex-shrink: 0; transition: box-shadow 0.3s;
+        }
+        .control-group.active .label-dot { box-shadow: 0 0 6px currentColor; }
+        .label-dot.az  { background: #2E7D32; }
+        .label-dot.dip { background: #F57C00; }
+
+        .val-display {
+            font-size: 20px; font-weight: 700; color: #1a237e;
+            font-variant-numeric: tabular-nums;
+        }
+        .val-unit { font-size: 14px; font-weight: 600; }
+
+        input[type=range] {
+            -webkit-appearance: none; appearance: none; width: 100%;
+            height: 6px; border-radius: 3px; background: #e0e0e0;
+            outline: none; cursor: pointer; margin: 2px 0;
+        }
+        input[type=range]::-webkit-slider-thumb {
+            -webkit-appearance: none; appearance: none;
+            width: 20px; height: 20px; border-radius: 50%;
+            background: #1565C0; border: 2px solid #fff;
+            box-shadow: 0 1px 4px rgba(0,0,0,0.2);
+            cursor: pointer; transition: box-shadow 0.15s;
+        }
+        input[type=range]::-webkit-slider-thumb:hover { box-shadow: 0 2px 8px rgba(0,0,0,0.25); }
+        input[type=range]::-moz-range-thumb {
+            width: 20px; height: 20px; border-radius: 50%;
+            background: #1565C0; border: 2px solid #fff;
+            box-shadow: 0 1px 4px rgba(0,0,0,0.2); cursor: pointer;
+        }
+        input[type=range]::-moz-range-track { height: 6px; border-radius: 3px; background: #e0e0e0; }
+
+        .range-ticks {
+            display: flex; justify-content: space-between;
+            font-size: 10px; color: #aaa; padding: 0 2px; margin-top: 0; user-select: none;
+        }
+        .note { font-size: 11px; color: #999; line-height: 1.5; }
+        .divider { border: none; border-top: 1px solid #e8eaf6; margin: 0; }
+
+        .results-section { display: flex; flex-direction: column; gap: 8px; }
+        .section-subtitle {
+            font-size: 11px; font-weight: 700; color: #888;
+            text-transform: uppercase; letter-spacing: 1px; padding: 0; margin: 0;
+        }
+        .result-box {
+            background: #f8f9fc; border: 1px solid #e8eaf6; border-radius: 8px;
+            padding: 10px 12px; display: flex; flex-direction: column; gap: 4px;
+            transition: box-shadow 0.2s;
+        }
+        .result-box:hover { box-shadow: 0 1px 6px rgba(0,0,0,0.06); }
+        .result-box.accent-red  { border-left: 3px solid #cc0000; }
+        .result-box.accent-blue { border-left: 3px solid #0066cc; }
+        .result-row { display: flex; align-items: center; justify-content: space-between; }
+        .result-label {
+            font-size: 13px; font-weight: 600; color: #333;
+            display: flex; align-items: center; gap: 6px;
+        }
+        .result-value {
+            font-size: 18px; font-weight: 700; color: #1a237e;
+            font-variant-numeric: tabular-nums;
+        }
+        .result-formula { font-size: 11px; color: #aaa; font-family: 'SF Mono','Consolas','Menlo',monospace; }
+        .dot-inline { width: 8px; height: 8px; border-radius: 50%; display: inline-block; flex-shrink: 0; }
+        .dot-inline.red  { background: #cc0000; }
+        .dot-inline.blue { background: #0066cc; }
+
+        .panel-footer { text-align: center; font-size: 11px; color: #bbb; padding: 2px 0 0; }
+
+        /* 图例 */
         #legend {
-            position: absolute;
-            bottom: 20px;
-            right: 20px;
-            background: rgba(255, 255, 255, 0.9);
-            padding: 15px;
-            border-radius: 8px;
-            font-size: 12px;
-            pointer-events: none;
-            z-index: 10;
+            position: absolute; bottom: 20px; right: 20px;
+            background: rgba(255,255,255,0.94);
+            backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
+            padding: 12px 16px; border-radius: 10px;
+            box-shadow: 0 2px 12px rgba(0,0,0,0.08);
+            font-size: 12px; pointer-events: none; z-index: 10;
+            border: 1px solid rgba(0,0,0,0.06);
         }
-        .note { font-size: 11px; color: #666; margin-top: 5px; font-style: italic; }
-        
-        /* Label styles for 3D */
-        .label {
-            color: #000;
-            font-family: sans-serif;
-            padding: 4px 6px;
-            background: rgba(255, 255, 255, 0.85);
-            border: 1px solid #ccc;
-            border-radius: 4px;
-            font-size: 12px;
-            pointer-events: none;
-            font-weight: bold;
-            white-space: nowrap;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        #legend h3 { margin: 0 0 8px; font-size: 12px; font-weight: 700; color: #888; text-transform: uppercase; letter-spacing: 0.5px; }
+        .legend-item { display: flex; align-items: center; gap: 8px; padding: 3px 0; font-size: 12px; color: #555; }
+        .legend-dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
+        .legend-line { width: 14px; height: 2px; flex-shrink: 0; border-radius: 1px; }
+
+        /* 3D 标签 */
+        .label-arc {
+            color: #000; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            padding: 3px 8px; background: rgba(255,255,255,0.9);
+            border: 1px solid #ccc; border-radius: 6px;
+            font-size: 12px; pointer-events: none; font-weight: 600;
+            white-space: nowrap; box-shadow: 0 1px 4px rgba(0,0,0,0.08);
+            transition: font-size 0.25s, background 0.25s, box-shadow 0.25s, opacity 0.25s;
         }
+        /* 坐标轴标签：无框线无背景，仅文字 */
+        .label-axis {
+            color: #666; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            padding: 0; background: none; border: none;
+            font-size: 13px; pointer-events: none; font-weight: 600;
+            white-space: nowrap; text-shadow: 0 0 4px rgba(255,255,255,0.8);
+            transition: opacity 0.25s;
+        }
+
+        /* 弧线 hover 光标提示 */
+        #info canvas { pointer-events: auto; }
     </style>
 </head>
 <body>
 
-<div id="loading">正在加载 3D 引擎...</div>
+<div id="loading">⏳ 正在加载 3D 引擎…</div>
 
 <div id="info">
-    <h1>钻孔角度关系计算器</h1>
-    
-    <div class="control-group">
-        <label>
-            <span style="color:#00aa00">1. 输入方位角 (Azimuth)</span>
-            <span id="azimuthVal" class="val-display">338°</span>
-        </label>
-        <input type="range" id="azimuthSlider" min="0" max="360" value="338">
-        <div class="note">定义：以正北(Y)为0°，顺时针旋转</div>
-    </div>
-
-    <div class="control-group">
-        <label>
-            <span style="color:#ff8800">2. 输入倾角 (Dip)</span>
-            <span id="dipVal" class="val-display">73°</span>
-        </label>
-        <input type="range" id="dipSlider" min="0" max="90" value="73">
-        <div class="note">定义：与水平面的夹角 (向下为正)</div>
-    </div>
-
-    <div class="control-group">
-        <h3>计算结果</h3>
-        
-        <div class="result-box" style="border-left: 4px solid #cc0000;">
-            <div class="legend-item">
-                <span class="color-box" style="background:#cc0000"></span>
-                <strong>X轴夹角 (平面):</strong>
-                <span id="xAngleResult" class="val-display" style="font-weight:bold; font-size:15px">248°</span>
+    <div class="panel-header"><span class="icon">🧭</span><h1>钻孔角度关系计算器</h1></div>
+    <div class="panel-body">
+        <div class="control-group az-group" id="azGroup">
+            <div class="group-label">
+                <span class="label-text"><span class="label-dot az"></span>方位角 Azimuth</span>
+                <span><span id="azimuthVal" class="val-display">338</span><span class="val-unit">°</span></span>
             </div>
-            <div class="note">公式 = 方位角 - 90°</div>
+            <input type="range" id="azimuthSlider" min="0" max="360" value="338">
+            <div class="range-ticks"><span>0°(N)</span><span>90°(E)</span><span>180°(S)</span><span>270°(W)</span><span>360°(N)</span></div>
+            <div class="note">以正北 Y 为 0°，顺时针旋转</div>
         </div>
 
-        <div class="result-box" style="border-left: 4px solid #0066cc;">
-            <div class="legend-item">
-                <span class="color-box" style="background:#0066cc"></span>
-                <strong>Z轴夹角 (偏差):</strong>
-                <span id="zAngleResult" class="val-display" style="font-weight:bold; font-size:15px">17°</span>
+        <div class="control-group dip-group" id="dipGroup">
+            <div class="group-label">
+                <span class="label-text"><span class="label-dot dip"></span>倾角 Dip</span>
+                <span><span id="dipVal" class="val-display">73</span><span class="val-unit">°</span></span>
             </div>
-            <div class="note">公式 = 90° - 倾角</div>
+            <input type="range" id="dipSlider" min="0" max="90" value="73">
+            <div class="range-ticks"><span>0°(水平)</span><span>45°</span><span>90°(垂直)</span></div>
+            <div class="note">钻孔与水平面的夹角，向下为正</div>
         </div>
-    </div>
-    
-    <div style="margin-top:10px; text-align:center; color:#888; font-size:12px;">
-        按住鼠标左键旋转视图，滚轮缩放
+
+        <hr class="divider">
+
+        <div class="results-section">
+            <p class="section-subtitle">📐 计算结果</p>
+            <div class="result-box accent-red">
+                <div class="result-row">
+                    <span class="result-label"><span class="dot-inline red"></span>X轴夹角（平面）</span>
+                    <span class="result-value" id="xAngleResult">248°</span>
+                </div>
+                <div class="result-formula">方位角 − 90°</div>
+            </div>
+            <div class="result-box accent-blue">
+                <div class="result-row">
+                    <span class="result-label"><span class="dot-inline blue"></span>Z轴夹角（倾角补角）</span>
+                    <span class="result-value" id="zAngleResult">17°</span>
+                </div>
+                <div class="result-formula">90° − 倾角</div>
+            </div>
+        </div>
+
+        <div class="panel-footer">🖱 拖拽旋转 &nbsp;|&nbsp; 滚轮缩放 &nbsp;|&nbsp; 右键平移</div>
     </div>
 </div>
 
 <div id="legend">
-    <h3 style="margin:0 0 5px 0;">图例说明</h3>
-    <div class="legend-item"><span class="color-box" style="background:#00aa00"></span> Y轴 (正北 North)</div>
-    <div class="legend-item"><span class="color-box" style="background:#cc0000"></span> X轴 (正东 East)</div>
-    <div class="legend-item"><span class="color-box" style="background:#0066cc"></span> Z轴 (天顶 Up)</div>
-    <div class="legend-item"><span class="color-box" style="background:#333"></span> 钻孔实体</div>
-    <div class="legend-item"><span class="color-box" style="background:#aaa"></span> 地面投影</div>
+    <h3>图例</h3>
+    <div class="legend-item"><span class="legend-dot" style="background:#00aa00"></span> Y 轴（正北 North）</div>
+    <div class="legend-item"><span class="legend-dot" style="background:#cc0000"></span> X 轴（正东 East）</div>
+    <div class="legend-item"><span class="legend-dot" style="background:#0066cc"></span> Z 轴（天顶 Up）</div>
+    <div class="legend-item"><span class="legend-line" style="background:#333"></span> 钻孔实体</div>
+    <div class="legend-item"><span class="legend-line" style="background:transparent;border-bottom:1px dashed #aaa;height:0"></span> 地面投影</div>
 </div>
 
-<!-- 添加 Import Map 以解决模块加载路径问题 -->
 <script type="importmap">
-    {
-        "imports": {
-            "three": "https://cdn.jsdelivr.net/npm/three@0.128.0/build/three.module.js",
-            "three/examples/jsm/": "https://cdn.jsdelivr.net/npm/three@0.128.0/examples/jsm/"
-        }
-    }
+{ "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.128.0/build/three.module.js", "three/examples/jsm/": "https://cdn.jsdelivr.net/npm/three@0.128.0/examples/jsm/" } }
 </script>
 
-<!-- 使用 module 方式导入，现在可以直接引用 'three' -->
 <script type="module">
     import * as THREE from 'three';
     import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
     import { CSS2DRenderer, CSS2DObject } from 'three/examples/jsm/renderers/CSS2DRenderer.js';
 
-    // Global Variables
-    let camera, scene, renderer, labelRenderer, controls;
-    let drillholeMesh, projectionLine, dropLine;
+    // ── Scene globals ──
+    let camera, scene, renderer, labelRenderer, controls, raycaster, mouse;
+    let drillholeMesh, projectionLine, dropLine, horizRefLine;
     let azimuthArc, xAngleArc, dipArc, zAngleArc;
     let azimuthLabel, xAngleLabel, dipLabel, zAngleLabel;
-    let verticalRefLine; // New reference line for Z-angle
-    
-    // Axes Helpers
-    let xAxisMesh, yAxisMesh, zAxisMesh;
-    
-    const config = {
-        azimuth: 338,
-        dip: 73,
-        length: 8
+    let verticalRefLine, planeNormalLine;
+    let gridHelper;
+    let axisByKey = {};          // { x: [mesh,cone,label], y: [...], z: [...] }
+    let allArcRefs = {};         // name → THREE.Line
+    let currentHighlight = null; // 'azimuth' | 'dip' | null
+
+    const config = { azimuth: 338, dip: 73, length: 8 };
+
+    // ── 轴颜色：保持原值（亮色），透明度 0.7 ──
+    const AXIS = {
+        x: { color: 0xcc0000, label: 'X（东）', labelColor: '#cc0000', dir: new THREE.Vector3(1,0,0) },
+        y: { color: 0x00aa00, label: 'Y（北）', labelColor: '#00aa00', dir: new THREE.Vector3(0,0,-1) },
+        z: { color: 0x0066cc, label: 'Z（上）', labelColor: '#0066cc', dir: new THREE.Vector3(0,1,0) },
     };
 
     init();
     animate();
 
+    // ═══════════════════════════════════════════════
+    //  INIT
+    // ═══════════════════════════════════════════════
     function init() {
-        // Hide loading text
         document.getElementById('loading').style.display = 'none';
 
-        // Scene
         scene = new THREE.Scene();
-        scene.background = new THREE.Color(0xf5f5f5);
+        scene.background = new THREE.Color(0xf0f2f5);
 
-        // Camera
         camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 1000);
         camera.position.set(12, 12, 18);
 
-        // Renderer
         renderer = new THREE.WebGLRenderer({ antialias: true });
         renderer.setSize(window.innerWidth, window.innerHeight);
         renderer.shadowMap.enabled = true;
         renderer.outputEncoding = THREE.sRGBEncoding;
         document.body.appendChild(renderer.domElement);
 
-        // Label Renderer
+        // Raycaster for arc hover
+        raycaster = new THREE.Raycaster();
+        raycaster.params.Line = { threshold: 1.0 };
+        mouse = new THREE.Vector2();
+
         labelRenderer = new CSS2DRenderer();
         labelRenderer.setSize(window.innerWidth, window.innerHeight);
         labelRenderer.domElement.style.position = 'absolute';
@@ -196,131 +293,157 @@
         labelRenderer.domElement.style.pointerEvents = 'none';
         document.body.appendChild(labelRenderer.domElement);
 
-        // Controls
         controls = new OrbitControls(camera, renderer.domElement);
         controls.enableDamping = true;
         controls.dampingFactor = 0.05;
         controls.minDistance = 5;
         controls.maxDistance = 50;
 
-        // Lights
-        const ambientLight = new THREE.AmbientLight(0xffffff, 0.7);
-        scene.add(ambientLight);
+        scene.add(new THREE.AmbientLight(0xffffff, 0.7));
         const dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
         dirLight.position.set(10, 20, 10);
         dirLight.castShadow = true;
         scene.add(dirLight);
 
-        // Grid
-        const gridHelper = new THREE.GridHelper(30, 30, 0xdddddd, 0xeaeaea);
+        gridHelper = new THREE.GridHelper(30, 30, 0xe0e0e0, 0xf0f0f0);
         scene.add(gridHelper);
 
-        // --- Custom Axes (Thicker) ---
-        const axisRadius = 0.08;
+        // ── 坐标轴：原色 + 0.7 透明度，薄圆柱 ──
         const axisLen = 12;
+        for (const [key, cfg] of Object.entries(AXIS)) {
+            const end = cfg.dir.clone().multiplyScalar(axisLen);
+            const objs = createAxis(key, new THREE.Vector3(0,0,0), end, cfg.color, cfg.label, cfg.labelColor);
+            axisByKey[key] = objs;
+        }
 
-        // 1. Vertical Axis (Up) -> 3D Y-Axis -> Geo Z
-        zAxisMesh = createAxisCylinder(new THREE.Vector3(0,0,0), new THREE.Vector3(0,axisLen,0), 0x0066cc, "Z (上)");
-        
-        // 2. North Axis -> 3D -Z Axis -> Geo Y
-        yAxisMesh = createAxisCylinder(new THREE.Vector3(0,0,0), new THREE.Vector3(0,0,-axisLen), 0x00aa00, "Y (北)");
-
-        // 3. East Axis -> 3D X Axis -> Geo X
-        xAxisMesh = createAxisCylinder(new THREE.Vector3(0,0,0), new THREE.Vector3(axisLen,0,0), 0xcc0000, "X (东)");
-
-
-        // Initialize Objects
-        // Drillhole (Cylinder)
-        const dhGeo = new THREE.CylinderGeometry(0.15, 0.15, 1, 16);
-        const dhMat = new THREE.MeshPhongMaterial({ color: 0x333333 });
-        drillholeMesh = new THREE.Mesh(dhGeo, dhMat);
+        // ── 钻孔 ──
+        drillholeMesh = new THREE.Mesh(
+            new THREE.CylinderGeometry(0.15, 0.15, 1, 16),
+            new THREE.MeshPhongMaterial({ color: 0x333333 })
+        );
         drillholeMesh.castShadow = true;
         scene.add(drillholeMesh);
 
-        // Projection Line
-        const projMat = new THREE.LineDashedMaterial({ color: 0x999999, dashSize: 0.5, gapSize: 0.3 });
-        const projGeo = new THREE.BufferGeometry();
-        projectionLine = new THREE.Line(projGeo, projMat);
+        // ── 辅助线 ──
+        projectionLine = new THREE.Line(
+            new THREE.BufferGeometry(),
+            new THREE.LineDashedMaterial({ color: 0x999999, dashSize: 0.5, gapSize: 0.3 })
+        );
         scene.add(projectionLine);
 
-        // Drop Line (Vertical from ground to hole bottom)
-        const dropMat = new THREE.LineDashedMaterial({ color: 0x999999, dashSize: 0.3, gapSize: 0.3 });
-        const dropGeo = new THREE.BufferGeometry();
-        dropLine = new THREE.Line(dropGeo, dropMat);
+        dropLine = new THREE.Line(
+            new THREE.BufferGeometry(),
+            new THREE.LineDashedMaterial({ color: 0x999999, dashSize: 0.3, gapSize: 0.3 })
+        );
         scene.add(dropLine);
 
-        // Vertical Reference Line (Downwards from origin for Z-angle visualization)
-        const vRefMat = new THREE.LineDashedMaterial({ color: 0x0066cc, dashSize: 0.3, gapSize: 0.2, opacity: 0.5, transparent: true });
-        const vRefGeo = new THREE.BufferGeometry();
-        verticalRefLine = new THREE.Line(vRefGeo, vRefMat);
+        horizRefLine = new THREE.Line(
+            new THREE.BufferGeometry(),
+            new THREE.LineDashedMaterial({ color: 0xbbbbbb, dashSize: 0.4, gapSize: 0.25 })
+        );
+        scene.add(horizRefLine);
+
+        verticalRefLine = new THREE.Line(
+            new THREE.BufferGeometry(),
+            new THREE.LineDashedMaterial({ color: 0x0066cc, dashSize: 0.3, gapSize: 0.2, opacity: 0.45, transparent: true })
+        );
         scene.add(verticalRefLine);
 
-        // Initialize Labels (Empty for now)
-        azimuthLabel = createLabel("方位角", new THREE.Vector3());
-        xAngleLabel = createLabel("X轴夹角", new THREE.Vector3());
-        dipLabel = createLabel("倾角", new THREE.Vector3());
-        zAngleLabel = createLabel("Z轴夹角", new THREE.Vector3());
+        // 法线示意线（倾角平面法线）
+        planeNormalLine = new THREE.Line(
+            new THREE.BufferGeometry(),
+            new THREE.LineBasicMaterial({ color: 0x999999, opacity: 0, transparent: true })
+        );
+        planeNormalLine.visible = false;
+        scene.add(planeNormalLine);
 
-        // Setup UI Listeners
-        const azSlider = document.getElementById('azimuthSlider');
-        const dipSlider = document.getElementById('dipSlider');
+        // ── 标签 ──
+        azimuthLabel = createArcLabel('方位角', new THREE.Vector3());
+        xAngleLabel  = createArcLabel('X轴夹角', new THREE.Vector3());
+        dipLabel     = createArcLabel('倾角', new THREE.Vector3());
+        zAngleLabel  = createArcLabel('Z轴补角', new THREE.Vector3());
 
-        // Initial update
+        // ── 初始构建 ──
         updateGeometries();
 
-        azSlider.addEventListener('input', (e) => {
+        // ── UI 事件 ──
+        const azSlider  = document.getElementById('azimuthSlider');
+        const dipSlider = document.getElementById('dipSlider');
+        const azGroup   = document.getElementById('azGroup');
+        const dipGroup  = document.getElementById('dipGroup');
+
+        azSlider.addEventListener('input', e => {
             config.azimuth = parseInt(e.target.value);
-            document.getElementById('azimuthVal').innerText = config.azimuth + "°";
+            document.getElementById('azimuthVal').innerText = config.azimuth;
+            updateGeometries();
+        });
+        dipSlider.addEventListener('input', e => {
+            config.dip = parseInt(e.target.value);
+            document.getElementById('dipVal').innerText = config.dip;
             updateGeometries();
         });
 
-        dipSlider.addEventListener('input', (e) => {
-            config.dip = parseInt(e.target.value);
-            document.getElementById('dipVal').innerText = config.dip + "°";
-            updateGeometries();
-        });
+        // 面板 hover/focus → 高亮
+        for (const [grp, name] of [[azGroup, 'azimuth'], [dipGroup, 'dip']]) {
+            grp.addEventListener('mouseenter', () => setHighlight(name));
+            grp.addEventListener('mouseleave', () => setHighlight(null));
+        }
+        azSlider.addEventListener('focus', () => { azGroup.classList.add('active'); setHighlight('azimuth'); });
+        azSlider.addEventListener('blur',  () => { azGroup.classList.remove('active'); setHighlight(null); });
+        dipSlider.addEventListener('focus', () => { dipGroup.classList.add('active'); setHighlight('dip'); });
+        dipSlider.addEventListener('blur',  () => { dipGroup.classList.remove('active'); setHighlight(null); });
+
+        // 结果框 hover → 对应角度高亮
+        const xResultBox = document.querySelector('.result-box.accent-red');
+        const zResultBox = document.querySelector('.result-box.accent-blue');
+        if (xResultBox) {
+            xResultBox.addEventListener('mouseenter', () => setHighlight('azimuth'));
+            xResultBox.addEventListener('mouseleave', () => setHighlight(null));
+        }
+        if (zResultBox) {
+            zResultBox.addEventListener('mouseenter', () => setHighlight('dip'));
+            zResultBox.addEventListener('mouseleave', () => setHighlight(null));
+        }
+
+        // 3D 弧线 hover → 同样高亮
+        window.addEventListener('mousemove', onMouseMove, false);
 
         window.addEventListener('resize', onWindowResize, false);
     }
 
-    function createAxisCylinder(start, end, color, labelText) {
-        const height = start.distanceTo(end);
-        const geometry = new THREE.CylinderGeometry(0.06, 0.06, height, 12);
-        const material = new THREE.MeshPhongMaterial({ color: color });
-        const mesh = new THREE.Mesh(geometry, material);
-        
-        // Position: midpoint
+    function createAxis(key, start, end, color, labelText, labelColor) {
+        const h = start.distanceTo(end);
+        const mat = new THREE.MeshPhongMaterial({ color, transparent: true, opacity: 0.70 });
+        const mesh = new THREE.Mesh(new THREE.CylinderGeometry(0.04, 0.04, h, 10), mat);
         const mid = new THREE.Vector3().addVectors(start, end).multiplyScalar(0.5);
         mesh.position.copy(mid);
-        
-        // Orientation
         mesh.quaternion.setFromUnitVectors(new THREE.Vector3(0,1,0), end.clone().sub(start).normalize());
-        
+        mesh.userData = { axisKey: key, isAxis: true };
         scene.add(mesh);
 
-        // Cone Tip
-        const coneGeo = new THREE.ConeGeometry(0.2, 0.5, 16);
-        const cone = new THREE.Mesh(coneGeo, material);
+        const cone = new THREE.Mesh(new THREE.ConeGeometry(0.14, 0.35, 12), mat);
         cone.position.copy(end);
         cone.quaternion.setFromUnitVectors(new THREE.Vector3(0,1,0), end.clone().sub(start).normalize());
+        cone.userData = { axisKey: key, isAxis: true };
         scene.add(cone);
 
-        // Label
+        // 轴标签：仅文字，无框线无背景
         const div = document.createElement('div');
-        div.className = 'label';
-        div.style.color = '#' + color.toString(16).padStart(6, '0');
-        div.style.borderColor = div.style.color;
+        div.className = 'label-axis';
+        div.style.color = labelColor;
         div.innerText = labelText;
+        div.setAttribute('data-axis', key);
         const label = new CSS2DObject(div);
-        label.position.copy(end.clone().multiplyScalar(1.05)); // slightly past end
+        label.position.copy(end.clone().multiplyScalar(1.08));
+        label.userData = { axisKey: key, isAxisLabel: true };
         scene.add(label);
 
-        return mesh;
+        return [mesh, cone, label];
     }
 
-    function createLabel(text, pos) {
+    function createArcLabel(text, pos) {
         const div = document.createElement('div');
-        div.className = 'label';
+        div.className = 'label-arc';
         div.textContent = text;
         const label = new CSS2DObject(div);
         label.position.copy(pos);
@@ -328,129 +451,324 @@
         return label;
     }
 
-    // Helper to draw arcs
-    function drawArc(sceneObj, name, center, radius, startAngle, endAngle, color, normal, startVec) {
-        // Remove old if exists
+    // ═══════════════════════════════════════════════
+    //  ARC
+    // ═══════════════════════════════════════════════
+    function drawArc(name, center, radius, spanRad, color, normal, startVec, lw) {
         const old = scene.getObjectByName(name);
-        if(old) scene.remove(old);
+        if (old) scene.remove(old);
 
-        const segments = 64;
-        const points = [];
-        
-        // Basis
         const Z = normal.clone().normalize();
         const X = startVec.clone().normalize();
-        
-        // If endAngle is negative, we sweep backwards.
-        const span = endAngle;
-
-        for (let i = 0; i <= segments; i++) {
-            const theta = (i / segments) * span;
-            const v = X.clone().applyAxisAngle(Z, theta).multiplyScalar(radius).add(center);
-            points.push(v);
+        const segs = 64;
+        const pts = [];
+        for (let i = 0; i <= segs; i++) {
+            const t = (i / segs) * spanRad;
+            pts.push(X.clone().applyAxisAngle(Z, t).multiplyScalar(radius).add(center));
         }
-
-        const geometry = new THREE.BufferGeometry().setFromPoints(points);
-        const material = new THREE.LineBasicMaterial({ color: color, linewidth: 2 });
-        const line = new THREE.Line(geometry, material);
+        const geo = new THREE.BufferGeometry().setFromPoints(pts);
+        const mat = new THREE.LineBasicMaterial({ color, linewidth: lw || 2 });
+        const line = new THREE.Line(geo, mat);
         line.name = name;
+        line.userData = { arcName: name };
         scene.add(line);
+        allArcRefs[name] = line;
         return line;
     }
 
+    // ═══════════════════════════════════════════════
+    //  MOUSE-OVER ARC → HIGHLIGHT
+    // ═══════════════════════════════════════════════
+    function onMouseMove(event) {
+        // 如果鼠标在控制面板上，让面板事件管理高亮，不干涉
+        const infoEl = document.getElementById('info');
+        if (infoEl) {
+            const r = infoEl.getBoundingClientRect();
+            if (event.clientX >= r.left && event.clientX <= r.right &&
+                event.clientY >= r.top && event.clientY <= r.bottom) {
+                return;
+            }
+        }
+
+        mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
+        mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
+
+        raycaster.setFromCamera(mouse, camera);
+
+        // Only check arcs (the name-keyed lines)
+        const arcLines = Object.values(allArcRefs);
+        const intersects = raycaster.intersectObjects(arcLines, false);
+
+        if (intersects.length > 0) {
+            const obj = intersects[0].object;
+            const name = obj.userData.arcName;
+            if (name === 'azArc' || name === 'xArc') {
+                setHighlight('azimuth');
+                document.body.style.cursor = 'pointer';
+                return;
+            }
+            if (name === 'dipArc' || name === 'zArc') {
+                setHighlight('dip');
+                document.body.style.cursor = 'pointer';
+                return;
+            }
+        }
+        // No arc hit → restore (only if highlight wasn't set by panel)
+        document.body.style.cursor = '';
+        setHighlight(null);
+    }
+
+    // ═══════════════════════════════════════════════
+    //  HIGHLIGHT ENGINE — 仅保留相关元素，其余全部隐藏
+    // ═══════════════════════════════════════════════
+    function setHighlight(group, force = false) {
+        if (!force && currentHighlight === group) return;
+        currentHighlight = group;
+
+        if (!group) { unhighlightAll(); return; }
+
+        const isAz = group === 'azimuth';
+
+        // ── 图例 & 网格：隐藏 ──
+        const legendEl = document.getElementById('legend');
+        if (legendEl) legendEl.style.display = 'none';
+        gridHelper.visible = false;
+
+        // ── 弧线：本方加粗亮色显示，对方隐藏 ──
+        if (isAz) {
+            brightenArc('azArc', 0x4CAF50, 3.5);  showArc('azArc');
+            brightenArc('xArc',  0xff1744, 3.5);  showArc('xArc');
+            hideArc('dipArc');  hideArc('zArc');
+        } else {
+            brightenArc('dipArc', 0xFF9800, 3.5);  showArc('dipArc');
+            brightenArc('zArc',   0x448AFF, 3.5);  showArc('zArc');
+            hideArc('azArc');  hideArc('xArc');
+        }
+
+        // ── 标签：本方放大高亮，对方隐藏 ──
+        const hiS = { fontSize:'14px', background:'rgba(255,255,255,1)', boxShadow:'0 2px 10px rgba(0,0,0,0.2)', display:'' };
+        const hiN = { display:'none' };
+        applyLabelStyle(azimuthLabel, isAz ? hiS : hiN);
+        applyLabelStyle(xAngleLabel,  isAz ? hiS : hiN);
+        applyLabelStyle(dipLabel,     isAz ? hiN : hiS);
+        applyLabelStyle(zAngleLabel,  isAz ? hiN : hiS);
+
+        // ── 辅助线 ──
+        if (isAz) {
+            // 方位角组：投影线 + 水平参考线
+            projectionLine.visible = true;
+            projectionLine.material.color.setHex(0x555555);
+            horizRefLine.visible = true;
+            horizRefLine.material.color.setHex(0x999999);
+            // 隐藏倾角组
+            dropLine.visible = false;
+            verticalRefLine.visible = false;
+            planeNormalLine.visible = false;
+        } else {
+            // 倾角组：水平参考线 + 垂降线 + 垂参线 + 法线
+            horizRefLine.visible = true;
+            horizRefLine.material.color.setHex(0x777777);
+            dropLine.visible = true;
+            dropLine.material.color.setHex(0x555555);
+            verticalRefLine.visible = true;
+            verticalRefLine.material.opacity = 0.75;
+            updatePlaneNormalLine();
+            planeNormalLine.visible = true;
+            planeNormalLine.material.opacity = 0.6;
+            planeNormalLine.material.color.setHex(0x666666);
+            // 隐藏方位角组
+            projectionLine.visible = false;
+        }
+
+        // ── 坐标轴：始终显示，不隐藏 ──
+        // （坐标轴与钻孔永远可见，不参与高亮/隐藏逻辑）
+
+        // ── 钻孔：始终显示，不改变外观 ──
+    }
+
+    function unhighlightAll() {
+        // 图例恢复
+        const legendEl = document.getElementById('legend');
+        if (legendEl) legendEl.style.display = '';
+
+        // 弧线全部恢复
+        brightenArc('azArc', 0x2E7D32, 2);  showArc('azArc');
+        brightenArc('xArc',  0xcc0000, 2);  showArc('xArc');
+        brightenArc('dipArc', 0xF57C00, 2); showArc('dipArc');
+        brightenArc('zArc',   0x0066cc, 2); showArc('zArc');
+
+        // 标签全部恢复
+        const def = { fontSize:'12px', background:'rgba(255,255,255,0.9)', boxShadow:'0 1px 4px rgba(0,0,0,0.08)', opacity:'1', display:'' };
+        [azimuthLabel, xAngleLabel, dipLabel, zAngleLabel].forEach(l => applyLabelStyle(l, def));
+
+        // 辅助线全部恢复
+        projectionLine.visible = true;  projectionLine.material.color.setHex(0x999999);
+        dropLine.visible = true;        dropLine.material.color.setHex(0x999999);
+        horizRefLine.visible = true;    horizRefLine.material.color.setHex(0xbbbbbb);
+        verticalRefLine.visible = true; verticalRefLine.material.opacity = 0.45;
+        planeNormalLine.visible = false;
+
+        // 坐标轴与钻孔始终显示，无需恢复
+
+        // 网格恢复
+        gridHelper.visible = true;
+        gridHelper.material.opacity = 1.0;
+    }
+
+    function setAxisVisible(key, show) {
+        const objs = axisByKey[key];
+        if (!objs) return;
+        objs.forEach(obj => {
+            if (obj.element) {
+                // CSS2DObject 标签
+                obj.element.style.display = show ? '' : 'none';
+            } else if (obj.material) {
+                // Mesh（圆柱 / 锥体）
+                obj.visible = show;
+            }
+        });
+    }
+
+    function brightenArc(name, color, lw) {
+        const a = scene.getObjectByName(name);
+        if (a) { a.material.color.setHex(color); a.material.linewidth = lw; }
+    }
+    function showArc(name) {
+        const a = scene.getObjectByName(name);
+        if (a) a.visible = true;
+    }
+    function hideArc(name) {
+        const a = scene.getObjectByName(name);
+        if (a) a.visible = false;
+    }
+    function applyLabelStyle(label, s) {
+        if (!label || !label.element) return;
+        for (const [k, v] of Object.entries(s)) label.element.style[k] = v;
+    }
+
+    function updatePlaneNormalLine() {
+        // 法线 = cross(UP, projDir)，短线段从原点出发
+        const radAz = THREE.MathUtils.degToRad(config.azimuth);
+        const north = new THREE.Vector3(0,0,-1);
+        const projDir = north.clone().applyAxisAngle(new THREE.Vector3(0,1,0), -radAz).normalize();
+        const normal = new THREE.Vector3().crossVectors(new THREE.Vector3(0,1,0), projDir).normalize();
+        const end = normal.clone().multiplyScalar(3.0);
+        planeNormalLine.geometry.setFromPoints([new THREE.Vector3(0,0,0), end]);
+    }
+
+    // ═══════════════════════════════════════════════
+    //  GEOMETRY UPDATE
+    // ═══════════════════════════════════════════════
     function updateGeometries() {
         const L = config.length;
         const radAz = THREE.MathUtils.degToRad(config.azimuth);
         const radDip = THREE.MathUtils.degToRad(config.dip);
+        const UP = new THREE.Vector3(0, 1, 0);
 
-        // 1. Calculate Vector
+        // ── 方向向量 ──
         const northVec = new THREE.Vector3(0, 0, -1);
-        const projDir = northVec.clone().applyAxisAngle(new THREE.Vector3(0,1,0), -radAz).normalize();
-        
-        const horizLen = L * Math.cos(radDip);
-        const vertLen = -L * Math.sin(radDip);
+        const projDir = northVec.clone().applyAxisAngle(UP, -radAz).normalize();
 
-        const tipPos = projDir.clone().multiplyScalar(horizLen);
-        tipPos.y = vertLen;
+        const drillDir = projDir.clone().multiplyScalar(Math.cos(radDip))
+            .add(new THREE.Vector3(0, -Math.sin(radDip), 0));  // = projDir*cos(dip) - UP*sin(dip)
 
-        // 2. Update Drillhole Mesh
+        const tipPos = drillDir.clone().multiplyScalar(L);
+
+        // ── 钻孔 ──
         const midPos = tipPos.clone().multiplyScalar(0.5);
-        const dist = tipPos.length();
-        
         drillholeMesh.position.copy(midPos);
-        drillholeMesh.scale.set(1, dist, 1); 
-        drillholeMesh.quaternion.setFromUnitVectors(new THREE.Vector3(0,1,0), tipPos.clone().normalize());
+        drillholeMesh.scale.set(1, L, 1);
+        drillholeMesh.quaternion.setFromUnitVectors(new THREE.Vector3(0,1,0), drillDir);
 
-        // 3. Update Projections
+        // ── 投影线 ──
         const groundPos = new THREE.Vector3(tipPos.x, 0, tipPos.z);
-        
         projectionLine.geometry.setFromPoints([new THREE.Vector3(0,0,0), groundPos]);
-        projectionLine.computeLineDistances(); 
+        projectionLine.computeLineDistances();
 
+        // 水平参考线（沿 projDir 延伸到钻孔长度之外）
+        const horizEnd = projDir.clone().multiplyScalar(L + 2.5);
+        horizRefLine.geometry.setFromPoints([new THREE.Vector3(0,0,0), horizEnd]);
+        horizRefLine.computeLineDistances();
+
+        // 垂降线
         dropLine.geometry.setFromPoints([groundPos, tipPos]);
         dropLine.computeLineDistances();
 
-        // Update Vertical Reference Line (from Origin Down to length of L)
-        const refDown = new THREE.Vector3(0, -L, 0);
-        verticalRefLine.geometry.setFromPoints([new THREE.Vector3(0,0,0), refDown]);
+        // 垂直参考线
+        verticalRefLine.geometry.setFromPoints([new THREE.Vector3(0,0,0), new THREE.Vector3(0, -L, 0)]);
         verticalRefLine.computeLineDistances();
 
-        // 4. Update Arcs & Labels
+        // ── 倾角平面的法线（与 projDir + drillDir 所在平面垂直）──
+        // planeNorm = cross(UP, projDir)  — 倾角旋转轴
+        const planeNorm = new THREE.Vector3().crossVectors(UP, projDir).normalize();
 
-        // --- Azimuth (Green) ---
-        drawArc(scene, 'azArc', new THREE.Vector3(0,0,0), 3.5, 0, -radAz, 0x00aa00, new THREE.Vector3(0,1,0), new THREE.Vector3(0,0,-1));
-        
-        const azMid = new THREE.Vector3(0,0,-1).applyAxisAngle(new THREE.Vector3(0,1,0), -radAz/2).multiplyScalar(3.8);
+        // ── 方位角弧（水平面内，从北顺时针到 projDir）──
+        drawArc('azArc', new THREE.Vector3(0,0,0), 3.5, -radAz, 0x2E7D32, UP, northVec, 2);
+
+        const azMid = northVec.clone().applyAxisAngle(UP, -radAz/2).multiplyScalar(3.8);
         azimuthLabel.position.copy(azMid);
-        azimuthLabel.element.innerText = `方位角 ${config.azimuth}°`;
-        azimuthLabel.element.style.color = '#00aa00';
-        azimuthLabel.element.style.borderColor = '#00aa00';
+        azimuthLabel.element.innerText = '方位角 ' + config.azimuth + '°';
+        azimuthLabel.element.style.color = '#2E7D32';
+        azimuthLabel.element.style.borderColor = '#2E7D32';
 
-        // --- X Axis Angle (Red) ---
+        // ── X轴夹角弧（水平面内，从东到 projDir）──
         let xDeg = config.azimuth - 90;
-        if(xDeg < 0) xDeg += 360;
-        xDeg = Math.round(xDeg*10)/10;
-        document.getElementById('xAngleResult').innerText = xDeg + "°";
+        if (xDeg < 0) xDeg += 360;
+        xDeg = Math.round(xDeg * 10) / 10;
+        document.getElementById('xAngleResult').innerText = xDeg + '°';
 
-        drawArc(scene, 'xArc', new THREE.Vector3(0,0,0), 5.0, 0, -THREE.MathUtils.degToRad(xDeg), 0xcc0000, new THREE.Vector3(0,1,0), new THREE.Vector3(1,0,0));
+        const eastVec = new THREE.Vector3(1, 0, 0);
+        drawArc('xArc', new THREE.Vector3(0,0,0), 5.0, -THREE.MathUtils.degToRad(xDeg), 0xcc0000, UP, eastVec, 2);
 
-        const xMid = new THREE.Vector3(1,0,0).applyAxisAngle(new THREE.Vector3(0,1,0), -THREE.MathUtils.degToRad(xDeg)/2).multiplyScalar(5.3);
+        const xMid = eastVec.clone().applyAxisAngle(UP, -THREE.MathUtils.degToRad(xDeg)/2).multiplyScalar(5.3);
         xAngleLabel.position.copy(xMid);
-        xAngleLabel.element.innerText = `X轴夹角 ${xDeg}°`;
+        xAngleLabel.element.innerText = 'X轴夹角 ' + xDeg + '°';
         xAngleLabel.element.style.color = '#cc0000';
         xAngleLabel.element.style.borderColor = '#cc0000';
 
-        // --- Dip (Orange) ---
-        const planeNorm = new THREE.Vector3().crossVectors(new THREE.Vector3(0,1,0), projDir).normalize();
-        drawArc(scene, 'dipArc', new THREE.Vector3(0,0,0), 4.0, 0, -radDip, 0xff8800, planeNorm, projDir);
+        // ── 倾角弧（竖直面内，从水平 projDir 向下旋转 +radDip 到钻孔）──
+        // 倾角 = 钻孔与水平面的夹角
+        // cross(planeNorm, projDir) = −UP
+        // +radDip: projDir·cos(dip) − UP·sin(dip) = 钻孔方向（向下）✓
+        drawArc('dipArc', new THREE.Vector3(0,0,0), 4.0, radDip, 0xF57C00, planeNorm, projDir, 2);
 
-        const dipMid = projDir.clone().applyAxisAngle(planeNorm, -radDip/2).multiplyScalar(4.0);
+        const dipMid = projDir.clone()
+            .applyAxisAngle(planeNorm, radDip / 2)
+            .multiplyScalar(4.0);
         dipLabel.position.copy(dipMid);
-        dipLabel.element.innerText = `倾角 ${config.dip}°`;
-        dipLabel.element.style.color = '#e67300';
-        dipLabel.element.style.borderColor = '#e67300';
+        dipLabel.element.innerText = '倾角 ' + config.dip + '°';
+        dipLabel.element.style.color = '#F57C00';
+        dipLabel.element.style.borderColor = '#F57C00';
 
-        // --- Z Axis Angle (Blue - Deviation from Vertical) ---
-        // Formula: 90 - Dip.
-        // If Dip=73, Z-angle=17.
-        // Visualization: From Vertical Down (0,-1,0) UP towards Drillhole.
-        // Direction: Opposite to rotation from Horizontal to Down.
-        // Horizontal to Down is +90 rotation (if we consider planeNorm axis).
-        // Down to Horizontal is -90.
-        // Down to Drillhole is -(90 - Dip).
+        // ── Z轴补角弧（竖直面内，从垂直向下旋转 radZ 到钻孔）──
+        // Z轴夹角 = 90° − 倾角（钻孔与竖直方向的夹角）
         const zDeg = 90 - config.dip;
-        document.getElementById('zAngleResult').innerText = zDeg + "°";
+        document.getElementById('zAngleResult').innerText = zDeg + '°';
 
-        // Start vector: Down (0, -1, 0)
-        // Angle: Negative (to go "up" towards horizontal)
         const radZ = THREE.MathUtils.degToRad(zDeg);
-        drawArc(scene, 'zArc', new THREE.Vector3(0,0,0), 2.5, 0, -radZ, 0x0066cc, planeNorm, new THREE.Vector3(0,-1,0));
+        const downVec = new THREE.Vector3(0, -1, 0);
+        drawArc('zArc', new THREE.Vector3(0,0,0), 2.5, -radZ, 0x0066cc, planeNorm, downVec, 2);
 
-        const zMid = new THREE.Vector3(0,-1,0).applyAxisAngle(planeNorm, -radZ/2).multiplyScalar(2.8);
+        const zMid = downVec.clone()
+            .applyAxisAngle(planeNorm, -radZ / 2)
+            .multiplyScalar(2.8);
         zAngleLabel.position.copy(zMid);
-        zAngleLabel.element.innerText = `Z轴夹角 ${zDeg}°`;
+        zAngleLabel.element.innerText = 'Z轴补角 ' + zDeg + '°';
         zAngleLabel.element.style.color = '#0066cc';
         zAngleLabel.element.style.borderColor = '#0066cc';
+
+        // 更新法线示意线
+        updatePlaneNormalLine();
+
+        // 如果当前高亮 dip 组，刷新法线可见性
+        if (currentHighlight === 'dip') {
+            planeNormalLine.visible = true;
+            planeNormalLine.material.opacity = 0.6;
+            planeNormalLine.material.color.setHex(0x666666);
+        }
+
+        // 如果当前高亮状态激活，重新应用（因为弧线被重建了）
+        if (currentHighlight) setHighlight(currentHighlight, true);
     }
 
     function onWindowResize() {

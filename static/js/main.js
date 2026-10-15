@@ -1069,17 +1069,8 @@ if (btnMultiviewAI) {
             return;
         }
 
-        const viewCountStr = prompt('生成几张视角？（1~4）', '3');
-        if (!viewCountStr) return;
-
-        const count = parseInt(viewCountStr);
-        if (isNaN(count) || count < 1 || count > 4) {
-            setStatus('!!! 请输入 1~4 之间的数字', 'error');
-            return;
-        }
-
         startLogPolling(sessionId);
-        setStatus('正在进行多视角纹理升级...', 'loading');
+        setStatus('正在进行多视角纹理升级（全部6个视角）...', 'loading');
         const timer = startButtonTimer(btnMultiviewAI, '纹理升级中');
 
         try {
@@ -1088,7 +1079,6 @@ if (btnMultiviewAI) {
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     session_id: sessionId,
-                    view_count: count,
                     color_map: modelData.color_map,
                     file_path: filePath
                 })
@@ -1340,15 +1330,9 @@ function renderMultiviewResults(data) {
         html += '<div class="card-title" style="border-top:none;background:#f5f5f5;font-weight:700;color:#333;padding:8px 16px;text-align:center;">' + img.view_label + '</div>';
         // 图片 + 操作按钮
         html += '<div class="card-img-wrapper" style="position:relative;">';
-        html += '<img src="' + img.url + '" alt="' + img.view_label + '" style="width:100%;max-height:400px;object-fit:contain;background:#f8f9fc;display:block;" onerror="this.style.display=\'none\';this.insertAdjacentHTML(\'afterend\',\'<div style=background:#fff3cd;color:#856404;padding:40px;text-align:center;border-radius:4px>⚠️ 图片加载失败<br><small>\' + this.src.split(\'?t=\')[0].split(\'/\').pop() + \'</small></div>\')">';
+        html += '<img src="' + img.url + '" alt="' + img.view_label + '" style="width:100%;max-height:560px;object-fit:contain;background:#f8f9fc;display:block;" onerror="this.style.display=\'none\';this.insertAdjacentHTML(\'afterend\',\'<div style=background:#fff3cd;color:#856404;padding:40px;text-align:center;border-radius:4px>⚠️ 图片加载失败<br><small>\' + this.src.split(\'?t=\')[0].split(\'/\').pop() + \'</small></div>\')">';
         // 放大镜按钮
-        html += '<button class="btn-zoom" data-url="' + img.url + '" title="放大预览">🔍</button>';
-        // 下载按钮
-        html += '<button class="btn-zoom-dl" data-url="' + img.url + '" data-label="' + img.view_label + '" title="下载保存">⬇</button>';
-        html += '</div>';
-        // 选择按钮
-        html += '<div style="padding:8px 16px 12px;text-align:center;">';
-        html += '<button class="btn-select" data-url="' + img.url + '" data-path="' + (img.path || '') + '" data-label="' + img.view_label + '" style="width:100%;">使用这张</button>';
+        html += '<button class="zoom-btn" data-url="' + img.url + '" title="放大预览">🔍</button>';
         html += '</div>';
         html += '</div>';
     }
@@ -1400,39 +1384,11 @@ function renderMultiviewResults(data) {
         });
     });
 
-    // 绑定选择按钮
-    containerEl.querySelectorAll('.btn-select').forEach(btn => {
-        btn.addEventListener('click', function() {
-            const url = this.dataset.url;
-            const path = this.dataset.path;
-            const label = this.dataset.label;
-            // 高亮选中的卡片
-            containerEl.querySelectorAll('.btn-select').forEach(b => b.style.background = '');
-            this.style.background = '#2E7D32';
-            this.style.color = '#fff';
-            this.textContent = '✅ 已选择';
-            setStatus('==> 已选择: ' + label, 'success');
-        });
-    });
-
     // 绑定放大镜按钮（直接使用 openFullscreen）
     containerEl.querySelectorAll('.zoom-btn').forEach(btn => {
         btn.addEventListener('click', function(e) {
             e.stopPropagation();
             openFullscreen(this.dataset.url);
-        });
-    });
-
-    // 绑定下载按钮
-    containerEl.querySelectorAll('.dl-btn').forEach(btn => {
-        btn.addEventListener('click', function(e) {
-            e.stopPropagation();
-            const link = document.createElement('a');
-            link.href = this.dataset.url;
-            link.download = (this.dataset.label || 'multiview') + '.png';
-            document.body.appendChild(link);
-            link.click();
-            document.body.removeChild(link);
         });
     });
 }
@@ -2790,18 +2746,28 @@ function renderRBFAnalysisResults(data) {
     var best = result.best;
     var allResults = result.all_results;
     var standards = data.standards;
+    var compositeStandards = data.composite_standards || [];
 
     if (!best || !allResults || allResults.length === 0) {
         resultsSection.innerHTML = '<div class="rbf-results-wrapper"><p style="text-align:center;padding:40px;color:#666;">无有效的参数组合结果</p></div>';
         return;
     }
 
-    // 判断最优 RMSE 属于哪个标准
+    // 用综合评分判断评级（优先），回退到 RMSE 标准
     var currentStd = standards[standards.length - 1];
-    for (var si = 0; si < standards.length; si++) {
-        if (best.rmse < standards[si].max) {
-            currentStd = standards[si];
-            break;
+    if (best.composite_score !== undefined && compositeStandards.length > 0) {
+        for (var si = 0; si < compositeStandards.length; si++) {
+            if (best.composite_score < compositeStandards[si].max) {
+                currentStd = compositeStandards[si];
+                break;
+            }
+        }
+    } else {
+        for (var si = 0; si < standards.length; si++) {
+            if (best.rmse < standards[si].max) {
+                currentStd = standards[si];
+                break;
+            }
         }
     }
 
@@ -2829,6 +2795,11 @@ function renderRBFAnalysisResults(data) {
     html += '               <span class="rmse-tag" style="background:' + currentStd.color + '">' + currentStd.label + '</span>';
     html += '           </span>';
     html += '       </div>';
+    html += '       <div class="best-param-row"><span class="label">MAE：</span><span class="value">' + best.mae.toFixed(2) + ' m</span></div>';
+    html += '       <div class="best-param-row"><span class="label">最大误差：</span><span class="value">' + best.max_error.toFixed(2) + ' m</span></div>';
+    if (best.composite_score !== undefined) {
+        html += '   <div class="best-param-row"><span class="label">综合评分：</span><span class="value">' + best.composite_score.toFixed(4) + '</span></div>';
+    }
     html += '       <div class="best-param-row"><span class="label">建议：</span><span class="value">' + currentStd.suggestion + '</span></div>';
     html += '   </div>';
     html += '   <div class="best-param-actions">';
@@ -2837,21 +2808,24 @@ function renderRBFAnalysisResults(data) {
     html += '   </div>';
     html += '</div>';
 
-    // ========== RMSE 热力图（固定高度容器） ==========
+    // ========== 综合评分热力图（固定高度容器） ==========
     html += '<div class="analysis-block">';
-    html += '   <h3>📊 RMSE 热力图（核函数 × 平滑度）</h3>';
+    html += '   <h3>📊 综合评分热力图（核函数 × 平滑度）</h3>';
+    html += '   <p style="color:#888;font-size:12px;margin:0 0 8px;">颜色越绿越优（0最优），越红越差。综合评分 = 0.5×norm(RMSE) + 0.3×norm(MAE) + 0.2×norm(max_error)</p>';
     html += '   <div id="rmseHeatmap" class="rbf-heatmap-container"></div>';
     html += '</div>';
 
     // ========== 参数表格 ==========
-    var sorted = allResults.slice().sort(function(a, b) { return a.rmse - b.rmse; });
+    var sorted = allResults.slice().sort(function(a, b) {
+        return (a.composite_score || a.rmse) - (b.composite_score || b.rmse);
+    });
     var topN = sorted.slice(0, 30);
 
     html += '<div class="analysis-block">';
-    html += '   <h3>📋 参数组合明细（按 RMSE 升序，前 30 项）</h3>';
+    html += '   <h3>📋 参数组合明细（按综合评分升序，前 30 项）</h3>';
     html += '   <table class="report-table"><thead><tr>';
     html += '       <th>排名</th><th>核函数</th><th>平滑度</th><th>epsilon</th>';
-    html += '       <th>RMSE(m)</th><th>MAE(m)</th><th>最大误差(m)</th><th>评价</th>';
+    html += '       <th>综合评分</th><th>RMSE(m)</th><th>MAE(m)</th><th>最大误差(m)</th><th>评价</th>';
     html += '   </tr></thead><tbody>';
 
     for (var ri = 0; ri < topN.length; ri++) {
@@ -2866,6 +2840,7 @@ function renderRBFAnalysisResults(data) {
         html += '   <td>' + r.rbf_function + '</td>';
         html += '   <td>' + r.smooth + '</td>';
         html += '   <td>' + epsDisplay + '</td>';
+        html += '   <td>' + (r.composite_score !== undefined ? r.composite_score.toFixed(4) : '-') + '</td>';
         html += '   <td><b>' + r.rmse.toFixed(2) + '</b></td>';
         html += '   <td>' + r.mae.toFixed(2) + '</td>';
         html += '   <td>' + r.max_error.toFixed(2) + '</td>';
@@ -2877,14 +2852,45 @@ function renderRBFAnalysisResults(data) {
 
     // ========== 参考标准表 ==========
     html += '<div class="analysis-block">';
-    html += '   <h3>📖 RMSE 参考标准</h3>';
+
+    // ── 综合评分标准 ──
+    if (compositeStandards.length > 0) {
+        html += '   <h3>📖 综合评分参考标准</h3>';
+        html += '   <p style="color:#888;font-size:12px;margin:0 0 8px;">综合评分 = '
+            + '0.5×norm(RMSE) + 0.3×norm(MAE) + 0.2×norm(max_error)，0=最优，越高越差</p>';
+        html += '   <table class="report-table standards-table"><thead><tr>';
+        html += '       <th>综合评分范围</th><th>评价</th><th>建议</th>';
+        html += '   </tr></thead><tbody>';
+        var isCompositeCurrent = best.composite_score !== undefined;
+        for (var ci = 0; ci < compositeStandards.length; ci++) {
+            var cst = compositeStandards[ci];
+            var cIsCur = isCompositeCurrent
+                && best.composite_score < cst.max
+                && (ci === 0 || best.composite_score >= compositeStandards[ci - 1].max);
+            var cRange = cst.max >= 99999
+                ? '≥ ' + compositeStandards[compositeStandards.length - 2].max
+                : '< ' + cst.max;
+            var cRowStyle = cIsCur ? 'background:' + cst.color + '22;font-weight:bold;' : '';
+            html += '<tr class="' + (cIsCur ? 'current-standard' : '') + '" style="' + cRowStyle + '">';
+            html += '   <td>' + cRange + '</td>';
+            html += '   <td style="color:' + cst.color + '">' + cst.label + '</td>';
+            html += '   <td>' + cst.suggestion + (cIsCur ? ' ← 当前结果' : '') + '</td>';
+            html += '</tr>';
+        }
+        html += '</tbody></table>';
+        html += '   <br>';
+    }
+
+    // ── RMSE 参考标准（传统） ──
+    html += '   <h3>📖 RMSE 参考标准（绝对值）</h3>';
     html += '   <table class="report-table standards-table"><thead><tr>';
     html += '       <th>RMSE 范围</th><th>评价</th><th>建议</th>';
     html += '   </tr></thead><tbody>';
 
+    var isRMSEOnly = best.composite_score === undefined;
     for (var si2 = 0; si2 < standards.length; si2++) {
         var st = standards[si2];
-        var isCurrent = (st === currentStd);
+        var isCurrent = isRMSEOnly && (st === currentStd);
         var rangeText = st.max >= 99999
             ? '> ' + standards[standards.length - 2].max + ' m'
             : '< ' + st.max + ' m';
@@ -2915,8 +2921,9 @@ function renderRBFAnalysisResults(data) {
 }
 
 /**
- * 绘制 RMSE 热力图（Plotly）
- * 横轴为平滑度，纵轴为 (核函数, epsilon) 组合，颜色深度表示 RMSE 大小
+ * 绘制综合评分热力图（Plotly）
+ * 横轴为平滑度，纵轴为 (核函数, epsilon) 组合，颜色深度表示综合评分大小
+ * 综合评分 = 0.5×norm(RMSE) + 0.3×norm(MAE) + 0.2×norm(max_error)，0=最优
  * 每个单元格对应输出表格中的一行，不再聚合不同 epsilon
  */
 function drawRMSEHeatmap(allResults) {
@@ -2941,11 +2948,11 @@ function drawRMSEHeatmap(allResults) {
     }
     var smooths = Object.keys(smoothSet).map(Number).sort(function(a, b) { return a - b; });
 
-    // 构建 RMSE 矩阵 — 每行一个 (函数, epsilon)，每列一个 smooth
-    var rmseMatrix = [];
+    // 构建综合评分矩阵 — 每行一个 (函数, epsilon)，每列一个 smooth
+    var scoreMatrix = [];
     var hoverTexts = [];
     var yLabels = [];
-    var cellRmses = [];
+    var cellScores = [];
 
     for (var ri = 0; ri < rowKeys.length; ri++) {
         var rk = rowKeySet[rowKeys[ri]];
@@ -2962,36 +2969,48 @@ function drawRMSEHeatmap(allResults) {
                     break;
                 }
             }
-            if (found && typeof found.rmse === 'number' && isFinite(found.rmse)) {
-                var val = parseFloat(found.rmse.toFixed(2));
+            if (found && typeof found.composite_score === 'number' && isFinite(found.composite_score)) {
+                var val = parseFloat(found.composite_score.toFixed(4));
                 row.push(val);
-                cellRmses.push(found.rmse);
+                cellScores.push(found.composite_score);
                 var txt = '核函数: ' + rk.func + '<br>smooth: ' + sm;
                 if (found.epsilon !== null && found.epsilon !== undefined) {
                     txt += '<br>epsilon: ' + found.epsilon;
                 }
-                txt += '<br>RMSE: ' + found.rmse.toFixed(2) + ' m<br>MAE: ' + found.mae.toFixed(2) + ' m';
+                txt += '<br>综合评分: ' + found.composite_score.toFixed(4);
+                txt += '<br>RMSE: ' + found.rmse.toFixed(2) + ' m';
+                txt += '<br>MAE: ' + found.mae.toFixed(2) + ' m';
+                txt += '<br>最大误差: ' + found.max_error.toFixed(2) + ' m';
                 hRow.push(txt);
+            } else if (found && typeof found.rmse === 'number' && isFinite(found.rmse)) {
+                // 回退：没有 composite_score 时用 RMSE（归一化近似）
+                row.push(NaN);
+                var txt2 = '核函数: ' + rk.func + '<br>smooth: ' + sm;
+                if (found.epsilon !== null && found.epsilon !== undefined) {
+                    txt2 += '<br>epsilon: ' + found.epsilon;
+                }
+                txt2 += '<br>RMSE: ' + found.rmse.toFixed(2) + ' m (无综合评分)';
+                hRow.push(txt2);
             } else {
                 row.push(NaN);
                 hRow.push('无数据');
             }
         }
-        rmseMatrix.push(row);
+        scoreMatrix.push(row);
         hoverTexts.push(hRow);
         yLabels.push(rk.label);
     }
 
-    // 从单元格 RMSE 值计算 zmax（105% 上浮）
-    cellRmses.sort(function(a, b) { return a - b; });
-    var cellMax = cellRmses.length > 0 ? cellRmses[cellRmses.length - 1] : 1;
-    var zmax = Math.ceil(cellMax * 1.05);
+    // 从单元格综合评分值计算 zmax（105% 上浮），确保最小值也为 0 附近可视化
+    cellScores.sort(function(a, b) { return a - b; });
+    var cellMax = cellScores.length > 0 ? cellScores[cellScores.length - 1] : 1;
+    var zmax = Math.max(Math.ceil(cellMax * 1.05 * 100) / 100, 0.01);
     var zmin = 0;
 
-    console.log('[RBF热力图] yLabels:', yLabels, '单元格数:', cellRmses.length, 'cellMax:', cellMax, 'zmax:', zmax);
+    console.log('[RBF热力图] yLabels:', yLabels, '单元格数:', cellScores.length, 'cellMax:', cellMax, 'zmax:', zmax);
 
     var trace = {
-        z: rmseMatrix,
+        z: scoreMatrix,
         x: smooths.map(String),
         y: yLabels,
         type: 'heatmap',
@@ -3000,7 +3019,7 @@ function drawRMSEHeatmap(allResults) {
         zauto: false,
         zmin: zmin,
         zmax: zmax,
-        colorbar: { title: 'RMSE (m)' },
+        colorbar: { title: '综合评分' },
         text: hoverTexts,
         hoverinfo: 'text',
         connectgaps: false
@@ -3077,7 +3096,10 @@ function copyBestParams(best) {
     var text = '核函数: ' + best.rbf_function +
                '\n平滑度: ' + best.smooth +
                (best.epsilon ? '\nepsilon: ' + best.epsilon : '') +
-               '\n预期误差: ' + best.rmse.toFixed(2) + ' m';
+               '\n综合评分: ' + (best.composite_score !== undefined ? best.composite_score.toFixed(4) : '-') +
+               '\nRMSE: ' + best.rmse.toFixed(2) + ' m' +
+               '\nMAE: ' + best.mae.toFixed(2) + ' m' +
+               '\n最大误差: ' + best.max_error.toFixed(2) + ' m';
 
     navigator.clipboard.writeText(text).then(function() {
         setStatus('==> 参数已复制到剪贴板', 'success');
@@ -3110,6 +3132,7 @@ function renderKrigingParamResults(data) {
     var best = result.best;
     var allResults = result.all_results;
     var standards = data.standards;
+    var compositeStandards = data.composite_standards || [];
     var nrStandards = data.nugget_ratio_standards || [];
     var r2Standards = data.r2_standards || [];
 
@@ -3118,12 +3141,21 @@ function renderKrigingParamResults(data) {
         return;
     }
 
-    // 判断最优 RMSE 属于哪个标准
+    // 用综合评分判断评级（优先），回退到 RMSE 标准
     var currentStd = standards[standards.length - 1];
-    for (var si = 0; si < standards.length; si++) {
-        if (best.rmse < standards[si].max) {
-            currentStd = standards[si];
-            break;
+    if (best.composite_score !== undefined && compositeStandards.length > 0) {
+        for (var si = 0; si < compositeStandards.length; si++) {
+            if (best.composite_score < compositeStandards[si].max) {
+                currentStd = compositeStandards[si];
+                break;
+            }
+        }
+    } else {
+        for (var si = 0; si < standards.length; si++) {
+            if (best.rmse < standards[si].max) {
+                currentStd = standards[si];
+                break;
+            }
         }
     }
 
@@ -3163,6 +3195,9 @@ function renderKrigingParamResults(data) {
     html += '       </div>';
     html += '       <div class="best-param-row"><span class="label">MAE：</span><span class="value">' + best.mae.toFixed(2) + ' m</span></div>';
     html += '       <div class="best-param-row"><span class="label">最大误差：</span><span class="value">' + best.max_error.toFixed(2) + ' m</span></div>';
+    if (best.composite_score !== undefined) {
+        html += '   <div class="best-param-row"><span class="label">综合评分：</span><span class="value">' + best.composite_score.toFixed(4) + '</span></div>';
+    }
     // 新增：块金值、基台值、块基比、变程、R²
     if (best.nugget != null) {
         html += '       <div class="best-param-row"><span class="label">块金值 (Nugget)：</span><span class="value">' + best.nugget.toFixed(2) + '</span></div>';
@@ -3214,13 +3249,15 @@ function renderKrigingParamResults(data) {
     html += '</div>';
 
     // ========== 参数表格（含新列） ==========
-    var sorted = allResults.slice().sort(function(a, b) { return a.rmse - b.rmse; });
+    var sorted = allResults.slice().sort(function(a, b) {
+        return (a.composite_score || a.rmse) - (b.composite_score || b.rmse);
+    });
 
     html += '<div class="analysis-block">';
-    html += '   <h3>📋 模型明细（按 RMSE 升序）</h3>';
+    html += '   <h3>📋 模型明细（按综合评分升序）</h3>';
     html += '   <div class="table-scrollable">';
     html += '   <table class="report-table"><thead><tr>';
-    html += '       <th>排名</th><th>变异函数模型</th><th>RMSE(m)</th><th>MAE(m)</th><th>最大误差(m)</th><th>块金值</th><th>基台值</th><th>块基比</th><th>变程</th><th>R²</th><th>评价</th>';
+    html += '       <th>排名</th><th>变异函数模型</th><th>综合评分</th><th>RMSE(m)</th><th>MAE(m)</th><th>最大误差(m)</th><th>块金值</th><th>基台值</th><th>块基比</th><th>变程</th><th>R²</th><th>评价</th>';
     html += '   </tr></thead><tbody>';
 
     for (var ri = 0; ri < sorted.length; ri++) {
@@ -3232,6 +3269,7 @@ function renderKrigingParamResults(data) {
         html += '<tr>';
         html += '   <td>' + (ri + 1) + '</td>';
         html += '   <td>' + r.variogram_model + '</td>';
+        html += '   <td>' + (r.composite_score !== undefined ? r.composite_score.toFixed(4) : '-') + '</td>';
         html += '   <td><b>' + r.rmse.toFixed(2) + '</b></td>';
         html += '   <td>' + (r.mae !== undefined ? r.mae.toFixed(2) : '-') + '</td>';
         html += '   <td>' + (r.max_error !== undefined ? r.max_error.toFixed(2) : '-') + '</td>';
@@ -3248,6 +3286,29 @@ function renderKrigingParamResults(data) {
     // ========== 关键参数参考标准 ==========
     html += '<div class="analysis-block">';
     html += '   <h3>📖 关键参数参考标准</h3>';
+
+    // 综合评分标准（优先展示）
+    if (compositeStandards.length > 0) {
+        html += '   <h4 style="margin:12px 0 6px;font-size:14px;">⭐ 综合评分评价标准</h4>';
+        html += '   <p style="color:#888;font-size:12px;margin:0 0 8px;">综合评分 = 0.5×norm(RMSE) + 0.3×norm(MAE) + 0.2×norm(max_error)，0=最优，越高越差</p>';
+        html += '   <table class="report-table standards-table"><thead><tr>';
+        html += '       <th>综合评分范围</th><th>评价</th><th>建议</th>';
+        html += '   </tr></thead><tbody>';
+        for (var csi = 0; csi < compositeStandards.length; csi++) {
+            var cst = compositeStandards[csi];
+            var isCsCurrent = (cst === currentStd);
+            var csRangeText = cst.max >= 99999
+                ? '> ' + compositeStandards[compositeStandards.length - 2].max.toFixed(2)
+                : '< ' + cst.max.toFixed(2);
+            var csRowStyle = isCsCurrent ? 'background:' + cst.color + '22;font-weight:bold;' : '';
+            html += '<tr class="' + (isCsCurrent ? 'current-standard' : '') + '" style="' + csRowStyle + '">';
+            html += '   <td>' + csRangeText + '</td>';
+            html += '   <td style="color:' + cst.color + '">' + cst.label + '</td>';
+            html += '   <td>' + cst.suggestion + (isCsCurrent ? ' ← 当前结果' : '') + '</td>';
+            html += '</tr>';
+        }
+        html += '</tbody></table>';
+    }
 
     // RMSE 标准
     html += '   <h4 style="margin:12px 0 6px;font-size:14px;">📏 RMSE 评价标准</h4>';
@@ -3548,7 +3609,8 @@ function applyKrigingBestParams(best) {
  */
 function copyKrigingBestParams(best) {
     var text = '变异函数模型: ' + best.variogram_model +
-               '\n预期误差 (RMSE): ' + best.rmse.toFixed(2) + ' m' +
+               '\n综合评分: ' + (best.composite_score !== undefined ? best.composite_score.toFixed(4) : '-') +
+               '\nRMSE: ' + best.rmse.toFixed(2) + ' m' +
                '\nMAE: ' + best.mae.toFixed(2) + ' m' +
                '\n最大误差: ' + best.max_error.toFixed(2) + ' m';
 
@@ -3683,8 +3745,10 @@ function renderAnalysisReport(data) {
 
     html += '</tbody></table></div>';
 
-    // 图表
-    html += '<div class="report-block"><h3>📈 图表分析</h3><div id="reportCharts"></div></div>';
+    // 图表 — 仅在有分析数据时展示
+    if (data.has_rbf || data.has_kriging) {
+        html += '<div class="report-block"><h3>📈 图表分析</h3><div id="reportCharts"></div></div>';
+    }
 
     reportSection.innerHTML = html;
 
@@ -3693,7 +3757,9 @@ function renderAnalysisReport(data) {
         exportBtn.addEventListener('click', exportAnalysisData);
     }
 
-    renderReportCharts(data);
+    if (data.has_rbf || data.has_kriging) {
+        renderReportCharts(data);
+    }
 }
 
 function renderReportCharts(data) {
@@ -4329,9 +4395,8 @@ function appendLogMessage(msg, type) {
     else if (type === 'warning') line.style.color = '#dcdcaa';
     else line.style.color = '#d4d4d4';
     historyEl.appendChild(line);
-    // 自动滚动到底部
-    var container = document.getElementById('statusBody');
-    if (container) container.scrollTop = container.scrollHeight;
+    // 自动滚动到底部 — 目标 #statusHistory（内容实际追加到的容器）
+    historyEl.scrollTop = historyEl.scrollHeight;
 }
 
 // 地图初始化函数

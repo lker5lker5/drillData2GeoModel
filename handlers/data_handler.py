@@ -344,7 +344,7 @@ def register_routes(app):
         try:
             from config import (
                 CACHE_ENABLED, KRIGING_ANALYSIS_CACHE_TYPE, KRIGING_RMSE_STANDARDS,
-                KRIGING_NUGGET_RATIO_STANDARDS, KRIGING_R2_STANDARDS
+                KRIGING_NUGGET_RATIO_STANDARDS, KRIGING_R2_STANDARDS, RBF_COMPOSITE_STANDARDS
             )
             from .cache_manager import (
                 compute_file_hash, get_cached_result, save_cached_result
@@ -441,6 +441,11 @@ def register_routes(app):
                     progress_callback=progress_cb
                 )
                 analysis_results['all'] = result
+                if result.get('best'):
+                    b = result['best']
+                    cs = b.get('composite_score')
+                    cs_str = f'{cs:.4f}' if cs is not None else 'N/A'
+                    log_and_print(session_id, f"==> 克里金推荐: {b['variogram_model']} | 综合评分={cs_str} | RMSE={b['rmse']:.2f} MAE={b['mae']:.2f} max_err={b['max_error']:.2f}")
             else:
                 if target_layer not in litho_groups:
                     return jsonify({'error': f'未找到岩性: {target_layer}'}), 400
@@ -458,12 +463,18 @@ def register_routes(app):
                     progress_callback=progress_cb
                 )
                 analysis_results[target_layer] = result
+                if result.get('best'):
+                    b = result['best']
+                    cs = b.get('composite_score')
+                    cs_str = f'{cs:.4f}' if cs is not None else 'N/A'
+                    log_and_print(session_id, f"==> 克里金推荐: {b['variogram_model']} | 综合评分={cs_str} | RMSE={b['rmse']:.2f} MAE={b['mae']:.2f} max_err={b['max_error']:.2f}")
     
             # ========== 组织返回数据 ==========
             result_data = {
                 'target_layer': target_layer,
                 'analysis': analysis_results,
                 'standards': KRIGING_RMSE_STANDARDS,
+                'composite_standards': RBF_COMPOSITE_STANDARDS,
                 'nugget_ratio_standards': KRIGING_NUGGET_RATIO_STANDARDS,
                 'r2_standards': KRIGING_R2_STANDARDS,
                 'layers_available': list(litho_groups.keys())
@@ -512,7 +523,7 @@ def register_routes(app):
     
         try:
             from config import (
-                CACHE_ENABLED, RBF_ANALYSIS_CACHE_TYPE, RBF_RMSE_STANDARDS
+                CACHE_ENABLED, RBF_ANALYSIS_CACHE_TYPE, RBF_RMSE_STANDARDS, RBF_COMPOSITE_STANDARDS
             )
             from .cache_manager import (
                 compute_file_hash, get_cached_result, save_cached_result
@@ -610,6 +621,11 @@ def register_routes(app):
                     progress_callback=progress_cb
                 )
                 analysis_results['all'] = result
+                if result.get('best'):
+                    b = result['best']
+                    cs = b.get('composite_score')
+                    cs_str = f'{cs:.4f}' if cs is not None else 'N/A'
+                    log_and_print(session_id, f"==> RBF 推荐: {b['rbf_function']}/smooth={b['smooth']} | 综合评分={cs_str} | RMSE={b['rmse']:.2f} MAE={b['mae']:.2f} max_err={b['max_error']:.2f}")
             else:
                 if target_layer not in litho_groups:
                     return jsonify({'error': f'未找到岩性: {target_layer}'}), 400
@@ -627,12 +643,18 @@ def register_routes(app):
                     progress_callback=progress_cb2
                 )
                 analysis_results[target_layer] = result
+                if result.get('best'):
+                    b = result['best']
+                    cs = b.get('composite_score')
+                    cs_str = f'{cs:.4f}' if cs is not None else 'N/A'
+                    log_and_print(session_id, f"==> RBF 推荐: {b['rbf_function']}/smooth={b['smooth']} | 综合评分={cs_str} | RMSE={b['rmse']:.2f} MAE={b['mae']:.2f} max_err={b['max_error']:.2f}")
     
             # ========== 组织返回数据 ==========
             result_data = {
                 'target_layer': target_layer,
                 'analysis': analysis_results,
                 'standards': RBF_RMSE_STANDARDS,
+                'composite_standards': RBF_COMPOSITE_STANDARDS,
                 'layers_available': list(litho_groups.keys())
             }
     
@@ -1104,7 +1126,7 @@ def register_routes(app):
             if CACHE_ENABLED and input_hash:
                 save_cached_result(
                     session_id, QUALITY_CHECK_CACHE_TYPE,
-                    input_hash, params_hash, result
+                    input_hash, result, OUTPUT_FOLDER, params_hash=params_hash
                 )
     
             log_and_print(session_id, f"==> 模型质量评估完成，综合评分: {result['overall_score']} 分，评级: {result['overall_grade']}")

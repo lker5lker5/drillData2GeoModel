@@ -1131,18 +1131,30 @@ def call_qwen_api_for_modeling(image_paths, view_metas=None, color_map=None, api
     else:
         color_relations = '各岩性用对应颜色表达'
 
-    # ========== 3. 动态构建视角描述 ==========
+    # ========== 3. 动态构建视角描述（按视图名称分配角色） ==========
+    def _get_view_role(vm):
+        """根据视图名称/类型返回其在建模中的角色描述"""
+        name = vm.get('name', '')
+        label = vm.get('label', '')
+        if 'main_view' in name or '全景' in label:
+            return '作为几何形态的**主参考**，用于确定地质体的整体空间轮廓和三维形态'
+        if 'east_west' in name or '东西向' in label:
+            return '作为东西向剖面的**精确约束**。此图的每一条岩性分界线的高程位置，必须在生成结果中严格对应'
+        if 'north_south' in name or '南北向' in label:
+            return '作为南北向剖面的**精确约束**，与东西向剖面正交，共同约束三维形态'
+        if 'top_down' in name or '俯视' in label:
+            return '作为**平面展布参考**，用于确定矿体在平面上的分布范围和走向'
+        if 'supplementary' in name or '补充' in label:
+            return '作为**补充立体参考**，用于检查主视图背面被遮挡的结构和边界'
+        if 'iso' in name or '等轴' in label:
+            return '作为**标准化对比参考**，用于统一视角下的形态验证'
+        return '用于多角度验证地质体的三维形态一致性'
+
     if view_metas and len(view_metas) >= 3:
         view_descriptions = []
         for i, vm in enumerate(view_metas):
-            prefix = ''
-            if i == 0:
-                prefix = '作为几何形态的**主参考**，用于确定地质体的整体空间轮廓'
-            elif i == 1:
-                prefix = '作为垂向结构的**精确约束**。此图的每一条岩性分界线的高程位置，必须在生成结果中严格对应'
-            elif i == 2:
-                prefix = '与上一张正交，共同约束三维形态'
-            view_descriptions.append(f'- {vm["label"]} —— {vm.get("user_tip", "")}（{prefix}）')
+            role = _get_view_role(vm)
+            view_descriptions.append(f'- {vm["label"]} —— {vm.get("user_tip", "")}（{role}）')
 
         # 检测两个剖面视图是否正交
         profile_views = []
@@ -1219,11 +1231,10 @@ def call_qwen_api_for_modeling(image_paths, view_metas=None, color_map=None, api
 4. 正交剖面图的岩性分界线在交点处深度必须一致
 5. 地质体应呈现为完整连续的地质块体，边缘自然过渡
 6. **层位必须严格按深度从上到下排列，禁止上下颠倒或穿插**
-7. **深度标尺必须完整生成，且与地质体层位深度严格对应**
-8. 光照自然，具有地质剖面的专业感，避免过度反光或卡通化
-9. 背景为纯白色，无任何多余文字或标注（深度标尺除外）
-10. 图像风格为科学分析 + 符合地质真实的图片
-11. 输出为单张高质量的三维地质结构渲染图，分辨率不低于1024x1024
+7. 光照自然，具有地质剖面的专业感，避免过度反光或卡通化
+8. 背景为纯白色。在图像右侧显示Z轴（高程）标尺，仅此一个坐标轴，不要显示X轴和Y轴坐标，不要显示任何文字标注
+9. 图像风格为科学分析 + 符合地质真实的图片
+10. 输出为单张高质量的三维地质结构渲染图，分辨率不低于1024x1024
 """
     # ========== 3. 构建 content 数组（压缩参考图以减少传输量） ==========
     content_list = []
@@ -1253,7 +1264,7 @@ def call_qwen_api_for_modeling(image_paths, view_metas=None, color_map=None, api
             "n": 2,                    # 生成2张图
             "size": "1024*1024",
             "watermark": False,
-            "prompt_extend": True
+            "prompt_extend": False    # 不允许 AI 重写结构化提示词
         }
     }
 
@@ -1300,14 +1311,21 @@ def call_qwen_api_for_modeling(image_paths, view_metas=None, color_map=None, api
 
 
 def color_map_to_text(color_map):
-    """把 color_map dict 转为文本描述字符串"""
-    lines = []
+    """把 color_map dict 转为去重后的文本描述字符串（与 call_qwen_api_for_modeling 一致）"""
+    color_groups = {}
     for color, names in color_map.items():
-        lines.append(f'- {color}: {names}')
+        if color not in color_groups:
+            color_groups[color] = set()
+        for name in names.split('、'):
+            color_groups[color].add(name.strip())
+    lines = []
+    for color, name_set in color_groups.items():
+        lines.append(f'- {color}: {"/".join(sorted(name_set))}')
     return '\n'.join(lines)
 
 
 def call_qwen_api_for_multiview(anchor_image, target_image, color_map,
+                                  anchor_view=None, target_view=None,
                                   api_key=None, api_url=None, model=None):
     """
     以最优 AI 图为主锚，生成目标视角的 AI 图。
@@ -1316,6 +1334,8 @@ def call_qwen_api_for_multiview(anchor_image, target_image, color_map,
         anchor_image: 主锚图路径（最优 AI 图）
         target_image: 目标视角的 Python 无标注图路径
         color_map: 颜色映射 dict
+        anchor_view: 主锚图对应的 VIEW_CONFIG 条目（含 name, label 等）
+        target_view: 目标视角对应的 VIEW_CONFIG 条目
         api_key / api_url / model: 可选覆盖
 
     返回:
@@ -1332,26 +1352,52 @@ def call_qwen_api_for_multiview(anchor_image, target_image, color_map,
     if not api_key:
         return None, "!!! API密钥未配置"
 
-    # 构建提示词
+    # 构建提示词 — 使用视角名称而非序号，包含完整地质约束
     color_text = color_map_to_text(color_map)
+
+    # 视角描述
+    if target_view:
+        target_desc = f'"{target_view.get("label", "目标视角")}"（{target_view.get("name", "")}）：{target_view.get("user_tip", "")}'
+    else:
+        target_desc = '目标视角'
+    if anchor_view:
+        anchor_desc = f'"{anchor_view.get("label", "主锚图")}"（{anchor_view.get("name", "")}）：{anchor_view.get("user_tip", "")}'
+    else:
+        anchor_desc = '主锚图（已生成的高质量 AI 纹理图）'
+
     prompt = f"""
-请生成一张三维地质体渲染图。
+你是一位地质建模专家。请根据以下两张参考图，生成一张目标视角的三维地质体渲染图。
 
 【参考图说明】
-- 图1：已生成的高质量 AI 纹理图（主锚图）—— 参考它的岩石纹理、光影风格、色调。
-- 图2：目标视角的几何约束图 —— 参考它的几何结构、层位分布、视角。
+- 主锚图（第一张图）：{anchor_desc}
+  → 作用：参考它的岩石纹理风格、光影效果、色调一致性。
+- 几何约束图（第二张图）：{target_desc}
+  → 作用：严格遵循它的几何结构、层位分布、各岩性边界位置和视角。
 
-【任务】
-生成一张新图，满足：
-1. 几何结构：严格遵循图2的层位分布、层间厚度、视角
-2. 岩石纹理：参考图1的纹理风格，保持视觉一致
-3. 颜色规范：严格遵循下方的颜色-岩性对应
-4. 背景纯白，无文字标注
-5. 不同岩性应呈现符合地质学常识的岩石质感（透明矿物晶莹剔透、金属矿物金属光泽、结晶岩有结晶结构等）
+【核心约束——必须严格遵守】
+1. **几何结构必须与几何约束图一致**：
+   - 每一层的顶板高程、底板高程、层间厚度必须与几何约束图对应
+   - 岩性分界线的深度位置必须严格保留，禁止将薄层合并或抹掉
+   - 层位必须按深度从上到下依次排列，禁止上下颠倒或穿插
+2. **视角必须与几何约束图完全一致**：不要改变观察角度
+3. **岩石纹理必须与主锚图风格一致**：纹理质感、光照方向、色调饱和度参考主锚图
+4. **颜色必须严格遵守下方对应关系**：每一层的颜色基调不得大幅偏移
+5. **背景必须为纯白色（255,255,255）**，无任何文字标注、水印、边框
+
+【岩性纹理逼真度要求】
+不同岩性必须呈现符合地质学常识的岩石质感，避免所有岩性都是"彩色黏土"：
+- 透明矿物（萤石、石英、方解石）→ 晶莹剔透、玻璃光泽
+- 金属矿物（黄铜矿、黄铁矿、铅锌矿）→ 金属光泽、致密块状
+- 结晶岩（花岗斑岩、片麻岩）→ 斑状或粒状结构、矿物颗粒边界清晰
+- 沉积岩（砂岩、泥岩、砾岩）→ 颗粒感或层理清晰
+- 覆盖层（第四系、浮土）→ 松散土状、无明显结晶
+- 其他未列举的岩性 → 根据名称推断真实地质质感，避免"塑料感"
 
 【颜色-岩性对应关系】
 {color_text}
 """
+    # 移除公共前缀缩进（保持与原始一致的风格）
+    prompt = prompt.strip()
 
     # 构建 content
     content_list = []
@@ -1372,7 +1418,7 @@ def call_qwen_api_for_multiview(anchor_image, target_image, color_map,
             "n": 1,
             "size": "1024*1024",
             "watermark": False,
-            "prompt_extend": True
+            "prompt_extend": False     # 不允许 AI 重写结构化提示词
         }
     }
 
@@ -1406,6 +1452,39 @@ def call_qwen_api_for_multiview(anchor_image, target_image, color_map,
         return None, f"!!! API调用异常: {str(e)}"
 
 
+def _get_pil_chinese_font(font_size=14):
+    """获取 PIL 中文字体，多级后备"""
+    from PIL import ImageFont
+    import matplotlib.font_manager as fm
+
+    # 与 matplotlib 使用相同的字体列表
+    font_names = [
+        'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei',
+        'SimHei', 'STHeiti', 'WenQuanYi Zen Hei',
+        'Noto Sans CJK SC', 'Source Han Sans SC',
+        'Arial Unicode MS',
+    ]
+    for name in font_names:
+        try:
+            path = fm.findfont(name, fallback_to_default=False)
+            if path and os.path.exists(path):
+                return ImageFont.truetype(path, font_size)
+        except Exception:
+            continue
+
+    # 系统文件扫描后备
+    try:
+        for fp in fm.findSystemFonts():
+            bn = os.path.basename(fp).lower()
+            if any(k in bn for k in ('hei', 'song', 'yahei', 'cjk', 'han')):
+                return ImageFont.truetype(fp, font_size)
+    except Exception:
+        pass
+
+    # 最终兜底：PIL 默认 bitmap 字体（中文将显示为方框）
+    return ImageFont.load_default()
+
+
 def add_annotations_to_ai_image(ai_image_path, output_path, z_min, z_max):
     """
     在 AI 图上叠加深度标尺（带标注版）。
@@ -1415,7 +1494,7 @@ def add_annotations_to_ai_image(ai_image_path, output_path, z_min, z_max):
         output_path: 输出路径
         z_min, z_max: 高程范围（米）
     """
-    from PIL import Image, ImageDraw, ImageFont
+    from PIL import Image, ImageDraw
 
     try:
         img = Image.open(ai_image_path).convert('RGB')
@@ -1435,6 +1514,10 @@ def add_annotations_to_ai_image(ai_image_path, output_path, z_min, z_max):
     ruler_bottom = h - 80
     ruler_width = 20
 
+    # 中文字体
+    cn_font = _get_pil_chinese_font(font_size=12)
+    cn_font_title = _get_pil_chinese_font(font_size=14)
+
     # 灰度渐变条（浅→深）
     for i in range(ruler_bottom - ruler_top):
         gray = int(255 * (1 - i / (ruler_bottom - ruler_top)))
@@ -1450,10 +1533,11 @@ def add_annotations_to_ai_image(ai_image_path, output_path, z_min, z_max):
         z_val = z_max - (z_max - z_min) * i / n_ticks
         draw.line([ruler_x + ruler_width, y, ruler_x + ruler_width + 8, y],
                   fill='black', width=2)
-        draw.text((ruler_x + ruler_width + 12, y - 8), f'{int(z_val)}m', fill='black')
+        draw.text((ruler_x + ruler_width + 12, y - 8), f'{int(z_val)}m',
+                  fill='black', font=cn_font)
 
-    # 标题
-    draw.text((ruler_x, ruler_top - 30), '深度标尺', fill='black')
+    # 标题（中文）
+    draw.text((ruler_x, ruler_top - 30), '深度标尺', fill='black', font=cn_font_title)
 
     new_img.save(output_path)
     return output_path
@@ -1540,6 +1624,290 @@ def plot_geometry_with_black_edges(volume_data, view_config, output_dir, base_na
     return save_path
 
 
+def generate_ai_texture_tile(lith_name, color_rgb, output_dir,
+                              api_key=None, api_url=None, model=None):
+    """
+    调用 AI 为一种岩性生成无缝岩石纹理贴片。
+
+    与 generate_ai_texture_for_single_view 的关键区别：
+    - 输入：岩性名称 + RGB 颜色（无参考图，纯文本生成）
+    - 输出：256×256 无缝纹理 tile
+    - prompt_extend: False（不允许 AI 重写 prompt）
+    - 职责：只生成纹理质感，不负责几何结构
+
+    参数:
+        lith_name: 岩性名称（如 "花岗斑岩"）
+        color_rgb: (R, G, B) 基准颜色 tuple
+        api_key / api_url / model: 可选覆盖
+
+    返回:
+        (tile_path_or_url, error) — tile_path 为保存的本地文件路径
+    """
+    import base64
+    import requests
+    from PIL import Image
+    from io import BytesIO
+    from config import (QWEN_API_KEY, QWEN_API_URL, QWEN_MODEL,
+                         TEXTURE_GENERATE_SIZE, TEXTURE_TILE_SIZE,
+                         TEXTURE_PROMPT_EXTEND)
+
+    api_key = api_key or QWEN_API_KEY
+    api_url = api_url or QWEN_API_URL
+    model = model or QWEN_MODEL
+
+    if not api_key:
+        return None, "!!! API密钥未配置"
+
+    # 颜色格式兼容：hex 字符串 '#FF0000' → RGB tuple
+    if isinstance(color_rgb, str):
+        hex_color = color_rgb.lstrip('#')
+        r = int(hex_color[0:2], 16)
+        g = int(hex_color[2:4], 16)
+        b = int(hex_color[4:6], 16)
+    else:
+        r, g, b = color_rgb[:3]
+        # 若为 0-1 范围则转为 0-255
+        if isinstance(r, float) and r <= 1.0:
+            r, g, b = int(r * 255), int(g * 255), int(b * 255)
+
+    # 岩性类型推断（用于纹理描述细化）
+    transparent_minerals = ['萤石', '石英', '方解石', '冰洲石', '水晶']
+    metallic_minerals = ['黄铜矿', '黄铁矿', '铅锌矿', '磁铁矿', '赤铁矿',
+                         '辉锑矿', '方铅矿', '闪锌矿', '斑铜矿', '辉铜矿']
+    crystalline_rocks = ['花岗斑岩', '片麻岩', '花岗岩', '闪长岩', '辉长岩',
+                         '玄武岩', '安山岩', '流纹岩', '大理岩', '片岩']
+    sedimentary_rocks = ['砂岩', '泥岩', '砾岩', '页岩', '灰岩', '白云岩']
+    overburden = ['第四系', '浮土', '残坡积', '冲积层', '覆盖层']
+
+    # 构建岩性特征描述
+    texture_desc = ''
+    if any(m in lith_name for m in transparent_minerals):
+        texture_desc = '透明-半透明矿物，玻璃光泽，晶体结构清晰，可见内部折射'
+    elif any(m in lith_name for m in metallic_minerals):
+        texture_desc = '金属矿物，金属光泽，致密块状构造，表面有不规则反光'
+    elif any(m in lith_name for m in crystalline_rocks):
+        texture_desc = '结晶岩，斑状或粒状结构，矿物颗粒边界清晰，略有风化痕迹'
+    elif any(m in lith_name for m in sedimentary_rocks):
+        texture_desc = '沉积岩，颗粒感或层理构造，可见碎屑颗粒，颜色略有不均'
+    elif any(m in lith_name for m in overburden):
+        texture_desc = '松散堆积物，土状质感，无明显结晶，颜色均匀偏暗'
+    else:
+        texture_desc = '天然岩石纹理，表面有自然颗粒感和微裂隙'
+
+    prompt = f"""生成一张{lith_name}的岩石纹理贴图。
+
+【岩性特征】
+{lith_name}：{texture_desc}
+
+【技术要求】
+1. 纹理逼真，符合{lith_name}的地质学特征，细节丰富，微观颗粒、裂隙、结晶结构清晰可辨
+2. 色彩基调为 RGB({r},{g},{b})，允许自然纹理变化但不得大幅偏移主色调
+3. 无缝拼接（tileable/seamless），水平和垂直边界可自然衔接，无接缝
+4. 无定向光源，光照均匀漫反射，避免明显的高光或阴影方向
+5. 纯色或接近纯色的均匀背景，无文字、水印、边框
+6. 分辨率 {TEXTURE_GENERATE_SIZE}×{TEXTURE_GENERATE_SIZE} 像素，满画幅填充，不要留白
+7. 纹理内部应有自然的随机变化（颗粒大小、排列方向、色彩深浅），避免机械化的均匀重复
+
+【重要】
+这是一张纯纹理贴片（surface texture），不是地质结构图：
+- 只包含岩石表面的微观纹理质感，不要出现任何几何结构、地层边界、黑色描边或深度信息
+- 纹理的四个边必须能自然衔接（seamless tiling）
+- 用于 3D 地质模型的表面纹理映射（材质贴图）
+- 纹理应像真实岩心照片一样自然，不要有任何人工感"""
+
+    payload = {
+        "model": model,
+        "input": {
+            "messages": [{
+                "role": "user",
+                "content": [
+                    {"text": prompt}
+                ]
+            }]
+        },
+        "parameters": {
+            "n": 1,
+            "size": f"{TEXTURE_GENERATE_SIZE}*{TEXTURE_GENERATE_SIZE}",
+            "watermark": False,
+            "prompt_extend": TEXTURE_PROMPT_EXTEND
+        }
+    }
+
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json"
+    }
+
+    try:
+        response = requests.post(api_url, headers=headers, json=payload, timeout=360)
+        if response.status_code != 200:
+            return None, f"!!! API调用失败 ({response.status_code}): {response.text[:200]}"
+
+        result = response.json()
+        output = result.get('output', {})
+        choices = output.get('choices', [])
+        if not choices:
+            return None, f"!!! API返回格式异常: {str(result)[:200]}"
+
+        content = choices[0].get('message', {}).get('content', [])
+        image_url = None
+        for item in content:
+            if isinstance(item, dict) and 'image' in item:
+                image_url = item['image']
+                break
+
+        if not image_url:
+            return None, f"!!! 未找到图片URL: {str(result)[:200]}"
+
+        # 下载 AI 生成的纹理并下采样
+        img_resp = requests.get(image_url, timeout=60)
+        if img_resp.status_code != 200:
+            return None, f"!!! 下载纹理失败: HTTP {img_resp.status_code}"
+
+        img = Image.open(BytesIO(img_resp.content)).convert('RGB')
+        img = img.resize((TEXTURE_TILE_SIZE, TEXTURE_TILE_SIZE), Image.LANCZOS)
+
+        # 保存为 PNG 到 session 输出目录
+        import hashlib
+        lith_hash = hashlib.md5(lith_name.encode()).hexdigest()[:8]
+        tile_path = os.path.join(output_dir, f'texture_tile_{lith_hash}.png')
+        img.save(tile_path)
+        return tile_path, None
+
+    except Exception as e:
+        return None, f"!!! API调用异常: {str(e)}"
+
+
+def render_textured_view(volume_data, view_config, texture_tiles,
+                          output_dir, base_name):
+    """
+    用 AI 纹理 tile 渲染一张视角图。
+
+    与旧流水线的关键区别：纹理来自 AI 生成的 tile（按岩性），
+    几何完全由代码控制（mask 渲染 + matplotlib 3D 投影）。
+
+    步骤：
+    1. 逐岩性渲染 mask 图（所有 layers 一起，alpha=1，纯色，白底）
+    2. 用对应岩性的 AI tile 填充各 mask 区域
+    3. 按 Z 深度排序岩性（深者在下，浅者在上）
+    4. 合成：深层岩性纹理 → 浅层岩性纹理覆盖
+    5. 渲染全几何 black-edge-only 图叠在最上层
+    6. 保存 PNG
+
+    降级策略：若某岩性无 AI tile，用其 volume_data['color'] 纯色填充
+    """
+    import matplotlib.pyplot as plt
+    import numpy as np
+    from PIL import Image
+    from config import (FIGURE_WIDTH, FIGURE_HEIGHT, FIGURE_DPI,
+                         MASK_WHITE_THRESHOLD, GEOMETRY_EDGE_WIDTH)
+
+    h_px = int(FIGURE_HEIGHT * FIGURE_DPI)
+    w_px = int(FIGURE_WIDTH * FIGURE_DPI)
+
+    # ---- 1. 逐岩性渲染 mask 并填充纹理 ----
+    lith_textures = {}  # lith_name → (mask, filled_texture)
+
+    # Z 深度排序：Z_max 大的在底层（先画）
+    lith_order = sorted(
+        volume_data.items(),
+        key=lambda kv: np.nanmax([np.nanmax(l) for l in kv[1]['layers']
+                                   if np.any(~np.isnan(l))] or [0]),
+        reverse=True
+    )
+
+    for lith, data in lith_order:
+        fig = plt.figure(figsize=(FIGURE_WIDTH, FIGURE_HEIGHT))
+        ax = fig.add_subplot(111, projection='3d')
+
+        color_rgb = data['color'][:3]
+        layers = data['layers']
+        for k, Z in enumerate(layers):
+            ax.plot_surface(
+                data['X'], data['Y'], Z,
+                color=color_rgb, alpha=1.0,  # 完全实色填充
+                edgecolor='none', shade=True   # 开启 3D 光照，增强立体感
+            )
+
+        # 隐藏所有轴
+        ax.set_xticks([]); ax.set_yticks([])
+        ax.set_xlabel(''); ax.set_ylabel(''); ax.set_zlabel('')
+        ax.tick_params(axis='both', which='both', length=0, labelbottom=False, labelleft=False)
+        ax.xaxis.line.set_visible(False); ax.yaxis.line.set_visible(False)
+        ax.xaxis.pane.set_visible(False); ax.yaxis.pane.set_visible(False)
+        ax.zaxis.pane.set_visible(False); ax.zaxis.line.set_visible(False)
+        ax.grid(False)
+
+        # 统一坐标范围（与 volume_data 对齐，避免各岩性独立缩放导致 mask 不对齐）
+        all_x, all_y, all_z = [], [], []
+        for d in volume_data.values():
+            all_x.extend(d['X'].ravel())
+            all_y.extend(d['Y'].ravel())
+            for layer in d['layers']:
+                valid = layer[~np.isnan(layer)]
+                all_z.extend(valid.tolist())
+        if all_x and all_y and all_z:
+            margin = 20
+            ax.set_xlim(min(all_x) - margin, max(all_x) + margin)
+            ax.set_ylim(min(all_y) - margin, max(all_y) + margin)
+            ax.set_zlim(min(all_z) - 10, max(all_z) + 10)
+
+        # set_zlim 会重新生成 Z 轴刻度，必须在其后再次清除
+        ax.set_zticklabels([])
+
+        ax.view_init(elev=view_config['elev'], azim=view_config['azim'])
+
+        # 渲染到内存 buffer
+        import io
+        buf = io.BytesIO()
+        plt.savefig(buf, dpi=FIGURE_DPI, pad_inches=0, facecolor='white',
+                    format='png')
+        buf.seek(0)
+        plt.close()
+
+        # mask 裁剪（非白像素 = 该岩性区域）
+        layer_img = np.array(Image.open(buf).convert('RGB'))
+        mask = np.any(layer_img < MASK_WHITE_THRESHOLD, axis=2)
+        buf.close()
+
+        # 填充纹理
+        filled = np.full_like(layer_img, 255)  # 白底
+        if lith in texture_tiles and os.path.exists(texture_tiles[lith]):
+            # 有 AI tile：平铺填充
+            tile = np.array(Image.open(texture_tiles[lith]).convert('RGB'))
+            th, tw = tile.shape[:2]
+            # 平铺 tile 到 mask 区域尺寸一致
+            tiled = np.tile(tile, (max(1, (h_px // th) + 2),
+                                   max(1, (w_px // tw) + 2), 1))
+            tiled = tiled[:h_px, :w_px, :]  # 裁剪到精确尺寸
+            filled[mask] = tiled[mask]
+        else:
+            # 降级：用纯色填充（color_rgb 为 0~1 浮点，需乘 255 转为 0~255 uint8）
+            if isinstance(color_rgb[0], float) and color_rgb[0] <= 1.0:
+                solid = (np.array(color_rgb) * 255).astype(np.uint8).reshape(1, 1, 3)
+            else:
+                solid = np.array(color_rgb, dtype=np.uint8).reshape(1, 1, 3)
+            filled[mask] = solid
+
+        lith_textures[lith] = (mask, filled)
+
+    # ---- 2. 按 Z 深度合成（深层先画，浅层覆盖） ----
+    canvas = np.full((h_px, w_px, 3), 255, dtype=np.uint8)
+
+    for lith, _ in lith_order:
+        if lith not in lith_textures:
+            continue
+        mask, filled = lith_textures[lith]
+        canvas[mask] = filled[mask]
+
+    # ---- 3. 保存 ----
+    order = view_config.get('order', 0)
+    fname = f'{base_name}_{view_config["name"]}.png'
+    save_path = os.path.join(output_dir, fname)
+    Image.fromarray(canvas).save(save_path)
+    return save_path
+
+
 def generate_ai_texture_for_single_view(geometry_path, color_map, api_key=None, api_url=None, model=None):
     """
     对单张几何图调用 AI 生成纹理图。
@@ -1620,7 +1988,7 @@ def generate_ai_texture_for_single_view(geometry_path, color_map, api_key=None, 
             "n": 1,
             "size": "1024*1024",
             "watermark": False,
-            "prompt_extend": True
+            "prompt_extend": False     # 不允许 AI 重写结构化提示词
         }
     }
 
@@ -1986,10 +2354,21 @@ def build_geological_bodies_with_volume_v2(loc_df, litho_df, survey_df,
         all_pts = np.vstack([top_pts[:, :2], bot_pts[:, :2]])
         try:
             hull = ConvexHull(all_pts)
-            # 向外扩展 3% 的边界
             center = all_pts[:, :2].mean(axis=0)
             hull_pts = all_pts[hull.vertices][:, :2]
-            expanded = center + (hull_pts - center) * 1.03   # 外扩 3%
+
+            # 自适应外扩：基于控制点平均空间间距
+            from scipy.spatial import KDTree
+            tree = KDTree(all_pts[:, :2])
+            distances, _ = tree.query(all_pts[:, :2], k=2)  # k=2 因 k=1 返回自身
+            avg_spacing = float(np.median(distances[:, 1]))
+
+            # 外扩量 = 2 倍平均钻孔间距，保底下限 5（归一化单位）
+            hull_radius = float(np.max(np.linalg.norm(hull_pts - center, axis=1)))
+            expansion = max(5.0, 2.0 * avg_spacing)
+            expansion_ratio = 1.0 + expansion / max(hull_radius, 1.0)
+
+            expanded = center + (hull_pts - center) * expansion_ratio
             hull_path = Path(expanded)
             grid_points = np.column_stack((xi_n.ravel(), yi_n.ravel()))
             inside = hull_path.contains_points(grid_points).reshape(xi_n.shape)
@@ -2873,6 +3252,62 @@ def add_points_to_data(loc_df):
     return points
 
 
+def _compute_composite_scores(all_results):
+    """
+    对所有参数组合计算综合评分（归一化加权法）。
+
+    对 RMSE、MAE、max_error 做 min-max 归一化后加权求和，
+    max_error 先做温和截尾（winsorize）防止极端值扭曲归一化。
+
+    返回:
+        修改 all_results 中的每个 entry，增加 'composite_score' 字段
+    """
+    import numpy as np
+    from config import (
+        SCORE_WEIGHT_RMSE, SCORE_WEIGHT_MAE, SCORE_WEIGHT_MAX_ERROR,
+        SCORE_WINSORIZE_PERCENTILE
+    )
+
+    if len(all_results) == 0:
+        return
+
+    rmse_vals = np.array([e['rmse'] for e in all_results if e.get('rmse') is not None])
+    mae_vals = np.array([e['mae'] for e in all_results if e.get('mae') is not None])
+    max_vals = np.array([e['max_error'] for e in all_results if e.get('max_error') is not None])
+
+    if len(rmse_vals) == 0:
+        return
+
+    # 温和截尾 max_error（p95 封顶）
+    p95 = np.percentile(max_vals, SCORE_WINSORIZE_PERCENTILE)
+    max_vals_clipped = np.clip(max_vals, None, p95)
+    # 同步 clip all_results 中的值
+    for e in all_results:
+        if e.get('max_error') is not None:
+            e['_max_error_clipped'] = min(e['max_error'], p95)
+
+    def _norm(vals, vmin, vmax):
+        if vmax - vmin < 1e-10:
+            return np.zeros_like(vals)
+        return (vals - vmin) / (vmax - vmin)
+
+    norm_rmse = _norm(rmse_vals, rmse_vals.min(), rmse_vals.max())
+    norm_mae = _norm(mae_vals, mae_vals.min(), mae_vals.max())
+    norm_max = _norm(max_vals_clipped, max_vals_clipped.min(), max_vals_clipped.max())
+
+    for i, e in enumerate(all_results):
+        if e.get('rmse') is None:
+            e['composite_score'] = float('inf')
+            continue
+        r_idx = np.where(rmse_vals == e['rmse'])[0][0]
+        m_idx = np.where(mae_vals == e['mae'])[0][0]
+        x_idx = np.where(max_vals == e['max_error'])[0][0]
+        score = (SCORE_WEIGHT_RMSE * norm_rmse[r_idx]
+               + SCORE_WEIGHT_MAE * norm_mae[m_idx]
+               + SCORE_WEIGHT_MAX_ERROR * norm_max[x_idx])
+        e['composite_score'] = round(float(score), 6)
+
+
 def evaluate_rbf_loocv(x, y, z, rbf_function='multiquadric', smooth=0.01, epsilon=None):
     """
     用留一交叉验证（LOOCV）评估 RBF 模型的泛化误差。
@@ -3022,18 +3457,20 @@ def optimize_rbf_params(
         }
         all_results.append(entry)
 
-        if best is None or result['rmse'] < best['rmse']:
-            best = entry.copy()
-
         if progress_callback:
-            progress_callback(idx, total, f'{func}/smooth={sm} RMSE={result["rmse"]:.4f}')
+            progress_callback(idx, total, f'{func}/smooth={sm} RMSE={result["rmse"]:.4f} MAE={result["mae"]:.4f} max_err={result["max_error"]:.4f}')
 
-    if best is None:
+    if len(all_results) == 0:
         return {
             'best': None, 'all_results': [],
             'success': False,
             'error': '所有参数组合均失败'
         }
+
+    # 综合评分（归一化加权：RMSE + MAE + max_error）
+    _compute_composite_scores(all_results)
+    all_results.sort(key=lambda e: e.get('composite_score', float('inf')))
+    best = all_results[0].copy()
 
     return {
         'best': best,
@@ -3236,18 +3673,20 @@ def optimize_kriging_params(
 
         all_results.append(entry)
 
-        if best is None or result['rmse'] < best['rmse']:
-            best = entry.copy()
-
         if progress_callback:
-            progress_callback(idx, total, f'{vgm} RMSE={result["rmse"]:.4f}')
+            progress_callback(idx, total, f'{vgm} RMSE={result["rmse"]:.4f} MAE={result["mae"]:.4f} max_err={result["max_error"]:.4f}')
 
-    if best is None:
+    if len(all_results) == 0:
         return {
             'best': None, 'all_results': [],
             'success': False,
             'error': '所有变异函数模型均失败'
         }
+
+    # 综合评分（归一化加权：RMSE + MAE + max_error）
+    _compute_composite_scores(all_results)
+    all_results.sort(key=lambda e: e.get('composite_score', float('inf')))
+    best = all_results[0].copy()
 
     return {
         'best': best,

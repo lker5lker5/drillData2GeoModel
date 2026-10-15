@@ -23,28 +23,61 @@ def register_routes(app):
             return jsonify({'error': '文件不存在'}), 400
     
         update_session_activity(session_id)
-    
+
         try:
+            # ========== 缓存查询 ==========
+            from .cache_manager import compute_file_hash, get_cached_result, save_cached_result
+            from .params_manager import load_session_params, compute_params_hash
+            from config import CACHE_ENABLED
+            user_params = load_session_params(session_id)
+            params_hash = compute_params_hash(user_params)
+            input_hash = None
+            if CACHE_ENABLED:
+                input_hash = compute_file_hash(file_path)
+                cached = get_cached_result(session_id, 'drill_views', input_hash, params_hash)
+                if cached:
+                    log_and_print(session_id, "==> 命中缓存，直接返回钻孔示意图")
+                    result = cached['result']
+                    for v in result.get('views', []):
+                        if 'url' in v and v['url'].startswith('/outputs/'):
+                            parts = v['url'].split('/')
+                            if len(parts) >= 4:
+                                parts[2] = session_id
+                                v['url'] = '/'.join(parts)
+                    return jsonify({
+                        'success': True,
+                        'from_cache': True,
+                        **result
+                    })
+            # =============================
+
             loc_df = pd.read_excel(file_path, sheet_name='定位表')
             survey_df = pd.read_excel(file_path, sheet_name='测斜表')
             litho_df = pd.read_excel(file_path, sheet_name='岩性表')
-    
+
             base_name = f'drill_views_{datetime.now().strftime("%y%m%d%H%M")}'
             output_dir = get_session_output_dir(session_id)
-    
+
             views = generate_drill_views(loc_df, survey_df, litho_df, output_dir, base_name)
-    
+
             # 修正 URL 为 session 子目录路径
             for v in views:
                 if 'url' in v and v['url'].startswith('/outputs/'):
                     fname = v['url'][len('/outputs/'):]
                     v['url'] = f'/outputs/{session_id}/{fname}'
-    
-            return jsonify({
-                'success': True,
+
+            result_data = {
                 'views': views,
                 'base_name': base_name,
                 'session_id': session_id
+            }
+            if CACHE_ENABLED and input_hash:
+                save_cached_result(session_id, 'drill_views', input_hash, result_data, output_dir, params_hash=params_hash)
+
+            return jsonify({
+                'success': True,
+                'from_cache': False,
+                **result_data
             })
     
         except Exception as e:
@@ -296,9 +329,14 @@ def register_routes(app):
             from config import CACHE_ENABLED
     
             input_hash = None
+            cache_input = None
             if CACHE_ENABLED and file_path:
+                import hashlib, json
+                views_str = json.dumps(sorted(selected_views), ensure_ascii=False)
+                view_hash = hashlib.md5(views_str.encode()).hexdigest()
                 input_hash = compute_file_hash(file_path)
-                cached = get_cached_result(session_id, 'ai_model', input_hash, params_hash)
+                cache_input = input_hash + '_' + view_hash
+                cached = get_cached_result(session_id, 'ai_model', cache_input, params_hash)
                 if cached:
                     log_and_print(session_id, "==> 命中缓存，直接返回 AI 建模结果")
                     return jsonify({
@@ -419,7 +457,7 @@ def register_routes(app):
     
             # ========== 保存缓存 ==========
             if CACHE_ENABLED and input_hash:
-                save_cached_result(session_id, 'ai_model', input_hash, result_data, output_dir, params_hash)
+                save_cached_result(session_id, 'ai_model', cache_input, result_data, output_dir, params_hash)
             # =============================
     
             return jsonify({
@@ -450,11 +488,36 @@ def register_routes(app):
             return jsonify({'error': '文件不存在'}), 400
     
         update_session_activity(session_id)
-    
+
         try:
-            from .params_manager import load_session_params
-    
+            from .params_manager import load_session_params, compute_params_hash
+            from .cache_manager import compute_file_hash, get_cached_result, save_cached_result
+            from config import CACHE_ENABLED
+
             user_params = load_session_params(session_id)
+            params_hash = compute_params_hash(user_params)
+
+            # ========== 缓存查询 ==========
+            cache_key = 'interactive_model_' + mode
+            input_hash = None
+            if CACHE_ENABLED:
+                input_hash = compute_file_hash(file_path)
+                cached = get_cached_result(session_id, cache_key, input_hash, params_hash)
+                if cached:
+                    log_and_print(session_id, "==> 命中缓存，直接返回交互式模型")
+                    result = cached['result']
+                    if 'html_url' in result and result['html_url'].startswith('/outputs/'):
+                        parts = result['html_url'].split('/')
+                        if len(parts) >= 4:
+                            parts[2] = session_id
+                            result['html_url'] = '/'.join(parts)
+                    return jsonify({
+                        'success': True,
+                        'from_cache': True,
+                        **result
+                    })
+            # =============================
+
             n_layers = user_params.get('N_LAYERS', N_LAYERS)
             rbf_function = user_params.get('RBF_FUNCTION', RBF_FUNCTION)
             rbf_smooth = user_params.get('RBF_SMOOTH', RBF_SMOOTH)
@@ -463,14 +526,14 @@ def register_routes(app):
             drill_radius = user_params.get('DRILL_RADIUS', DRILL_RADIUS)
             interpolation_method = user_params.get('INTERPOLATION_METHOD', INTERPOLATION_METHOD)
             kriging_variogram = user_params.get('KRIGING_VARIOGRAM', KRIGING_VARIOGRAM_MODEL)
-    
+
             loc_df = pd.read_excel(file_path, sheet_name='定位表')
             survey_df = pd.read_excel(file_path, sheet_name='测斜表')
             litho_df = pd.read_excel(file_path, sheet_name='岩性表')
-    
+
             base_name = f'interactive_{datetime.now().strftime("%y%m%d%H%M")}'
             output_dir = get_session_output_dir(session_id)
-    
+
             if mode == 'drill_only':
                 # 钻孔专用模式：快速生成，不含地质体
                 html_path = generate_drill_model_only(
@@ -489,16 +552,23 @@ def register_routes(app):
                     kriging_variogram=kriging_variogram
                 )
                 log_and_print(session_id, "==> 生成完整3D模型（钻孔+地质体）")
-    
+
             if not html_path:
                 log_and_print(session_id, '!!! 无法生成交互式模型')
                 return jsonify({'error': '无法生成交互式模型'}), 500
-    
-            return jsonify({
-                'success': True,
+
+            result_data = {
                 'html_url': f'/outputs/{session_id}/{os.path.basename(html_path)}',
                 'mode': mode,
                 'session_id': session_id
+            }
+            if CACHE_ENABLED and input_hash:
+                save_cached_result(session_id, cache_key, input_hash, result_data, output_dir, params_hash=params_hash)
+
+            return jsonify({
+                'success': True,
+                'from_cache': False,
+                **result_data
             })
     
         except Exception as e:
@@ -521,7 +591,7 @@ def register_routes(app):
         if not session_id or not best_ai_path:
             return jsonify({'error': '缺少必要参数'}), 400
     
-        if view_count < 1 or view_count > 4:
+        if view_count < 1 or view_count > 6:
             return jsonify({'error': 'view_count 必须在 1~4 之间'}), 400
     
         if not os.path.exists(best_ai_path):
@@ -565,7 +635,8 @@ def register_routes(app):
                     ai_urls, error = call_qwen_api_for_multiview(
                         anchor_image=best_ai_path,
                         target_image=py_image_path,
-                        color_map=color_map
+                        color_map=color_map,
+                        target_view=view
                     )
     
                     if error or not ai_urls:
@@ -675,55 +746,83 @@ def register_routes(app):
     @app.route('/api/multiview_texture_upgrade', methods=['POST'])
     def multiview_texture_upgrade_api():
         """
-        多视角纹理升级：
-        1. Python 生成 3 张带黑色描边的几何图
-        2. 每张独立调用 AI 升级纹理
-        3. 遮罩合成（几何由 Python 100% 控制，AI 只贡献纹理）
+        多视角纹理升级（重架构版）：
+        1. 构建地质体 → volume_data
+        2. 为每种岩性生成 AI 纹理 tile（仅生成纹理质感，不涉及几何）
+        3. 逐视角渲染：纹理 tile 贴图 + 黑边叠加（几何 100% 代码控制）
         4. 色调统一
         """
         data = request.json
         session_id = data.get('session_id')
-        view_count = data.get('view_count', 3)
         color_map = data.get('color_map', {})
-        file_path = data.get('file_path')  # 用于读取原始数据重建 volume_data
-    
+        file_path = data.get('file_path')
+        # 纹理升级始终处理全部固定视角，不再从前端接收 view_count
+
         if not session_id:
             return jsonify({'error': '缺少 session_id'}), 400
-    
+
         if not color_map:
             return jsonify({'error': '缺少颜色映射，请先生成建模图'}), 400
-    
+
         if not file_path or not os.path.exists(file_path):
             return jsonify({'error': '数据文件不存在，请先上传'}), 400
-    
+
         try:
             update_session_activity(session_id)
+
+            # ========== 缓存查询 ==========
+            from .params_manager import load_session_params, compute_params_hash
+            from .cache_manager import compute_file_hash, get_cached_result, save_cached_result
+            from config import CACHE_ENABLED
+            user_params = load_session_params(session_id)
+            params_hash = compute_params_hash(user_params)
+            import hashlib, json
+            input_hash = None
+            if CACHE_ENABLED:
+                input_hash = compute_file_hash(file_path)
+                cache_input = input_hash + '_vc_all'  # 始终处理全部视角，无需 view_count 区分
+                cached = get_cached_result(session_id, 'multiview_tex', cache_input, params_hash)
+                if cached:
+                    log_and_print(session_id, "==> 命中缓存，直接返回纹理升级结果")
+                    result = cached['result']
+                    for img in result.get('images', []):
+                        if 'url' in img and img['url'].startswith('/outputs/'):
+                            parts = img['url'].split('/')
+                            if len(parts) >= 4:
+                                parts[2] = session_id
+                                img['url'] = '/'.join(parts)
+                    import time as _time
+                    result['_cache_buster'] = str(int(_time.time()))
+                    return jsonify({
+                        'success': True,
+                        'from_cache': True,
+                        **result
+                    })
+            # =============================
+
             output_dir = get_session_output_dir(session_id)
-            from config import MULTIVIEW_VIEW_ORDERS, VIEW_CONFIGS
+            from config import MULTIVIEW_VIEW_ORDERS, VIEW_CONFIGS, MULTIVIEW_UNIFY_COLOR
             from .processors import (
-                plot_geometry_with_black_edges,
-                generate_ai_texture_for_single_view,
-                composite_ai_texture_with_geometry,
+                generate_ai_texture_tile,
+                render_textured_view,
                 unify_multiview_color_tones
             )
-    
-            # ========== 读取数据并构建地质体 ==========
+
+            # ========== Step 1: 构建地质体 ==========
             log_and_print(session_id, "正在读取数据并构建地质体模型...")
             loc_df = pd.read_excel(file_path, sheet_name='定位表')
             survey_df = pd.read_excel(file_path, sheet_name='测斜表')
             litho_df = pd.read_excel(file_path, sheet_name='岩性表')
-    
+
             from .params_manager import load_session_params
             user_params = load_session_params(session_id)
             n_layers = user_params.get('N_LAYERS', N_LAYERS)
             rbf_function = user_params.get('RBF_FUNCTION', RBF_FUNCTION)
             rbf_smooth = user_params.get('RBF_SMOOTH', RBF_SMOOTH)
             grid_resolution = user_params.get('GRID_RESOLUTION', GRID_RESOLUTION)
-            drill_style = user_params.get('DRILL_STYLE', DRILL_STYLE)
-            drill_radius = user_params.get('DRILL_RADIUS', DRILL_RADIUS)
             interpolation_method = user_params.get('INTERPOLATION_METHOD', INTERPOLATION_METHOD)
             kriging_variogram = user_params.get('KRIGING_VARIOGRAM', KRIGING_VARIOGRAM_MODEL)
-    
+
             bodies, volume_data = build_geological_bodies_with_volume_v2(
                 loc_df, litho_df, survey_df,
                 n_layers=n_layers,
@@ -734,80 +833,74 @@ def register_routes(app):
                 method=interpolation_method,
                 kriging_variogram=kriging_variogram
             )
-    
+
             if not volume_data:
                 return jsonify({'error': '未生成地质体数据'}), 500
-    
+
             log_and_print(session_id, f"==> 成功构建 {len(volume_data)} 个地质体")
-    
-            # ========== Step 1: 生成几何图（带黑色描边） ==========
-            log_and_print(session_id, "==> 生成几何约束图（带黑色描边）...")
-            geometry_paths = []  # (order, view, geo_path)
-            for order in MULTIVIEW_VIEW_ORDERS[:view_count]:
+
+            # ========== Step 2: 为每种岩性生成 AI 纹理 tile ==========
+            log_and_print(session_id, "==> 为每种岩性生成 AI 纹理 tile...")
+            texture_tiles = {}  # lith_name → tile_path
+            tile_errors = []
+
+            for lith, vdata in volume_data.items():
+                log_and_print(session_id, f"  正在生成 {lith} 纹理 tile...")
+                tile_path, error = generate_ai_texture_tile(
+                    lith, vdata['color'], output_dir
+                )
+                if error:
+                    log_and_print(session_id, f"  !!! {lith} 纹理 tile 生成失败: {error}，将降级为纯色")
+                    tile_errors.append((lith, error))
+                else:
+                    texture_tiles[lith] = tile_path
+                    log_and_print(session_id, f"  ✅ {lith} 纹理 tile 已保存")
+
+            # 至少需要一批成功的 tile（可以是 0 个——全部降级纯色，至少几何正确）
+            log_and_print(session_id,
+                f"==> 纹理 tile: 成功 {len(texture_tiles)}/{len(volume_data)}")
+
+            # ========== Step 3: 逐视角渲染 ==========
+            log_and_print(session_id, "==> 开始逐视角渲染纹理...")
+            view_results = []  # (order, view, result_path)
+            success_count = 0
+
+            for order in MULTIVIEW_VIEW_ORDERS:  # 始终处理全部固定视角
                 view = next((v for v in VIEW_CONFIGS if v.get('order') == order), None)
                 if not view:
                     log_and_print(session_id, f"!!! 未找到 order={order} 的视角配置")
                     continue
-    
-                geo_path = plot_geometry_with_black_edges(
-                    volume_data, view, output_dir, f'multiview_tex_{session_id}'
-                )
-                geometry_paths.append((order, view, geo_path))
-                log_and_print(session_id, f"==> 几何图 图{order} 已生成")
-    
-            if not geometry_paths:
-                return jsonify({'error': '所有几何图生成失败'}), 500
-    
-            # ========== Step 2: 每张独立调用 AI 升级纹理 ==========
-            log_and_print(session_id, "==> 开始 AI 纹理升级...")
-            import requests as http_requests
-            ai_paths = []  # (order, view, geo_path, ai_path)
-            success_count = 0
-    
-            for order, view, geo_path in geometry_paths:
-                log_and_print(session_id, f"==> 正在生成 图{order} ({view['label']}) 的 AI 纹理")
-    
-                ai_url, error = generate_ai_texture_for_single_view(geo_path, color_map)
-    
-                if error or not ai_url:
-                    log_and_print(session_id, f"!!! 图{order} AI 生成失败: {error}")
-                    continue
-    
-                # 下载 AI 图
-                local_filename = f'multiview_ai_raw_{order:02d}_{view["name"]}.png'
-                local_path = os.path.join(output_dir, local_filename)
-    
-                resp = http_requests.get(ai_url, timeout=60)
-                if resp.status_code == 200:
-                    with open(local_path, 'wb') as f:
-                        f.write(resp.content)
-                    ai_paths.append((order, view, geo_path, local_path))
+
+                log_and_print(session_id, f"  正在渲染 {view['label']} ({view['name']})...")
+                try:
+                    result_path = render_textured_view(
+                        volume_data, view, texture_tiles,
+                        output_dir, f'multiview_tex_{session_id}'
+                    )
+                    view_results.append((order, view, result_path))
                     success_count += 1
-                    log_and_print(session_id, f"==> 图{order} AI 纹理生成成功")
-                else:
-                    log_and_print(session_id, f"!!! 图{order} 下载失败: HTTP {resp.status_code}")
-    
+                    log_and_print(session_id, f"  ✅ {view['label']} 渲染完成")
+                except Exception as e:
+                    log_and_print(session_id, f"  !!! {view['label']} 渲染失败: {e}")
+
             if success_count == 0:
-                return jsonify({'error': '所有视角 AI 纹理升级均失败，请重试'}), 500
-    
-            # ========== Step 3: 遮罩合成 ==========
-            log_and_print(session_id, "==> 正在进行遮罩合成...")
-            composite_paths = []
-            for order, view, geo_path, ai_path in ai_paths:
-                out_filename = f'multiview_composite_{order:02d}_{view["name"]}.png'
-                out_path = os.path.join(output_dir, out_filename)
-                composite_ai_texture_with_geometry(geo_path, ai_path, out_path)
-                composite_paths.append(out_path)
-    
+                return jsonify({'error': '所有视角渲染失败'}), 500
+
+            # 提取路径列表用于色调统一
+            result_paths = [p for _, _, p in view_results]
+
             # ========== Step 4: 色调统一 ==========
-            log_and_print(session_id, "==> 正在进行色调统一...")
-            unified_paths = unify_multiview_color_tones(composite_paths)
-    
+            if MULTIVIEW_UNIFY_COLOR and len(result_paths) >= 2:
+                log_and_print(session_id, "==> 正在进行色调统一...")
+                unified_paths = unify_multiview_color_tones(result_paths)
+            else:
+                unified_paths = result_paths
+
             # ========== 组织返回数据 ==========
             images = []
             import time as _time
             _cache_buster = str(int(_time.time()))
-            for i, (order, view, _, _) in enumerate(ai_paths):
+            for i, (order, view, _) in enumerate(view_results):
                 unified_path = unified_paths[i]
                 if os.path.exists(unified_path) and os.path.getsize(unified_path) > 0:
                     filename = os.path.basename(unified_path)
@@ -817,20 +910,35 @@ def register_routes(app):
                         'view_label': view['label'],
                         'order': order,
                         'url': url,
-                        'has_ai': True
+                        'has_ai': len(texture_tiles) > 0
                     })
-                    log_and_print(session_id, f"  ✅ [{i}] {filename} ({os.path.getsize(unified_path)} bytes) → {url}")
-                else:
-                    log_and_print(session_id, f"  ❌ [{i}] 文件不存在或为空: {unified_path}")
-    
-            log_and_print(session_id, f"==> 多视角纹理升级完成（成功 {success_count}/{len(geometry_paths)}）")
-            return jsonify({
-                'success': True,
+
+            # 附加 tile 错误信息（供用户了解降级情况）
+            extra_info = {}
+            if tile_errors:
+                extra_info['tile_warnings'] = [
+                    f'{lith}: {err}' for lith, err in tile_errors
+                ]
+
+            log_and_print(session_id,
+                f"==> 多视角纹理升级完成（成功 {success_count}/{len(MULTIVIEW_VIEW_ORDERS)}）")
+
+            result_data = {
                 'images': images,
                 'success_count': success_count,
-                'total_count': len(geometry_paths)
+                'total_count': len(MULTIVIEW_VIEW_ORDERS),
+                **extra_info
+            }
+            if CACHE_ENABLED and input_hash:
+                cache_input = input_hash + '_vc_all'
+                save_cached_result(session_id, 'multiview_tex', cache_input, result_data, output_dir, params_hash=params_hash)
+
+            return jsonify({
+                'success': True,
+                'from_cache': False,
+                **result_data
             })
-    
+
         except Exception as e:
             log_and_print(session_id, f"!!! 多视角纹理升级失败: {e}")
             import traceback

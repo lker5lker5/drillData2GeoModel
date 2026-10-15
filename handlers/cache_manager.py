@@ -135,7 +135,9 @@ def clear_cache_by_params_change(session_id):
     当参数变化时，清除该 session 的模型、AI 模型和克里金缓存。
     """
     meta = load_cache_meta(session_id)
-    for key in ['model', 'ai_model', 'kriging', 'kriging_surface']:
+    for key in ['model', 'ai_model', 'kriging', 'kriging_surface',
+            'rbf_analysis', 'kriging_analysis', 'quality_check',
+            'drill_views', 'interactive_model_drill_only', 'interactive_model_full', 'multiview_tex']:
         meta.pop(key, None)
     save_cache_meta(session_id, meta)
 

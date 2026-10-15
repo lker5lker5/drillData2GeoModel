@@ -152,11 +152,11 @@ SCORE_RECOMMEND_THRESHOLD = 0.7
 
 # ==================== 多视角 AI 生成配置 ====================
 # 可选的生成数量
-MULTIVIEW_COUNT_OPTIONS = [1, 2, 3, 4]
-MULTIVIEW_DEFAULT_COUNT = 3
+MULTIVIEW_COUNT_OPTIONS = [1, 2, 3, 4, 5, 6]
+MULTIVIEW_DEFAULT_COUNT = 6
 
-# 用于多视角生成的 Python 参考图顺序（order 值）
-MULTIVIEW_VIEW_ORDERS = [1, 3, 5]   # 图1、图3、图5
+# 用于多视角生成/纹理升级的视图顺序（order 值），全部 6 个视角
+MULTIVIEW_VIEW_ORDERS = [1, 2, 3, 4, 5, 6]
 
 # ==================== 多视角纹理升级配置 ====================
 # 是否启用遮罩合成模式
@@ -173,6 +173,14 @@ GEOMETRY_EDGE_WIDTH = 0.5
 
 # 遮罩合成时，几何图"非白像素"的阈值
 MASK_WHITE_THRESHOLD = 240
+
+# ==================== 纹理 tile 生成配置 ====================
+# AI 生成的纹理贴片最终尺寸（像素）
+TEXTURE_TILE_SIZE = 1024
+# AI 生成时的输出尺寸（与 tile 最终尺寸一致，避免下采样损失细节）
+TEXTURE_GENERATE_SIZE = 1024
+# 纹理生成时不扩展 prompt（生成式模型不可控，纹理生成不需要扩展）
+TEXTURE_PROMPT_EXTEND = False
 
 # ==================== 克里金插值配置 ====================
 # 默认变异函数模型
@@ -348,12 +356,29 @@ RBF_OPTIMIZE_EPSILONS = [0.1, 0.5, 1.0, 2.0]
 # 参数分析缓存类型
 RBF_ANALYSIS_CACHE_TYPE = 'rbf_analysis'
 
+# ==================== RBF/Kriging 综合评分配置 ====================
+# 综合评分权重（归一化加权：综合分 = w_rmse×norm_rmse + w_mae×norm_mae + w_max×norm_max_err）
+# 权重之和应为 1.0
+SCORE_WEIGHT_RMSE = 0.5       # RMSE 权重：对大偏差敏感（平方惩罚），地质建模关键
+SCORE_WEIGHT_MAE = 0.3        # MAE 权重：反映"典型误差"水平
+SCORE_WEIGHT_MAX_ERROR = 0.2  # 最大误差权重：防止"平均好但某处极差"
+# 温和截尾分位数：归一化前将 max_error 截尾到此分位数，防止极端值扭曲评分
+SCORE_WINSORIZE_PERCENTILE = 95
+
 # RMSE 参考标准
 RBF_RMSE_STANDARDS = [
     {'max': 5,   'label': '优秀', 'suggestion': '直接采用',           'color': '#2E7D32'},
     {'max': 15,  'label': '良好', 'suggestion': '可用于宏观展示',     'color': '#1565C0'},
     {'max': 30,  'label': '一般', 'suggestion': '需检查数据质量',     'color': '#F57C00'},
     {'max': 99999, 'label': '差', 'suggestion': '数据可能有问题，或控制点分布太稀疏', 'color': '#C62828'},
+]
+
+# 综合评分参考标准（composite_score 为归一化加权值，0=最优）
+RBF_COMPOSITE_STANDARDS = [
+    {'max': 0.10, 'label': '优秀', 'suggestion': '各指标均表现优异，直接采用', 'color': '#2E7D32'},
+    {'max': 0.25, 'label': '良好', 'suggestion': '综合表现较好，可用于生产',   'color': '#1565C0'},
+    {'max': 0.50, 'label': '一般', 'suggestion': '部分指标偏高，建议检查',     'color': '#F57C00'},
+    {'max': 99999, 'label': '差', 'suggestion': '多项指标均不理想，需排查数据或调整参数', 'color': '#C62828'},
 ]
 
 # ==================== 模型质量评估配置 ====================

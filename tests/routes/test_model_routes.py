@@ -100,7 +100,7 @@ def mock_processors(monkeypatch):
         img.save(output_path)
         return output_path
 
-    # ---- 纹理升级 ----
+    # ---- 纹理升级（重架构版：AI tile + 代码渲染） ----
     def mock_plot_geometry(lith_volume_data, view_config, output_dir, base_name):
         path = os.path.join(output_dir, f'geometry_{view_config["order"]:02d}.png')
         os.makedirs(os.path.dirname(path) or output_dir, exist_ok=True)
@@ -109,14 +109,32 @@ def mock_processors(monkeypatch):
         img.save(path)
         return path
 
-    def mock_ai_texture(geometry_path, color_map, **kw):
-        return ('http://mock-url.com/texture.png', None)
+    def mock_texture_tile(lith_name, color_rgb, output_dir, **kw):
+        """mock generate_ai_texture_tile：返回一个假的纹理 tile 路径"""
+        os.makedirs(output_dir, exist_ok=True)
+        path = os.path.join(output_dir, f'texture_tile_mock_{lith_name}.png')
+        from PIL import Image
+        # color_rgb 可能是 hex 字符串 '#FF0000' 或 RGB tuple
+        if isinstance(color_rgb, str):
+            hex_color = color_rgb.lstrip('#')
+            r = int(hex_color[0:2], 16)
+            g = int(hex_color[2:4], 16)
+            b = int(hex_color[4:6], 16)
+        else:
+            r, g, b = color_rgb[:3]
+        img = Image.new('RGB', (256, 256), (r, g, b))
+        img.save(path)
+        return (path, None)
 
-    def mock_composite(geo_path, ai_path, output_path):
+    def mock_render_view(volume_data, view_config, texture_tiles, output_dir, base_name):
+        """mock render_textured_view：创建一个假的渲染输出文件"""
+        order = view_config.get('order', 0)
+        path = os.path.join(output_dir, f'{base_name}_{view_config["name"]}.png')
+        os.makedirs(output_dir, exist_ok=True)
         from PIL import Image
         img = Image.new('RGB', (64, 64))
-        img.save(output_path)
-        return output_path
+        img.save(path)
+        return path
 
     def mock_unify_colors(image_paths):
         return image_paths
@@ -141,8 +159,8 @@ def mock_processors(monkeypatch):
     monkeypatch.setattr('handlers.processors.add_annotations_to_ai_image', mock_add_annotations)
     monkeypatch.setattr('handlers.processors.call_qwen_api_for_modeling', mock_qwen_modeling)
     monkeypatch.setattr('handlers.processors.plot_geometry_with_black_edges', mock_plot_geometry)
-    monkeypatch.setattr('handlers.processors.generate_ai_texture_for_single_view', mock_ai_texture)
-    monkeypatch.setattr('handlers.processors.composite_ai_texture_with_geometry', mock_composite)
+    monkeypatch.setattr('handlers.processors.generate_ai_texture_tile', mock_texture_tile)
+    monkeypatch.setattr('handlers.processors.render_textured_view', mock_render_view)
     monkeypatch.setattr('handlers.processors.unify_multiview_color_tones', mock_unify_colors)
     monkeypatch.setattr('handlers.processors.add_view_label_watermark', lambda fig, label='': None)
 

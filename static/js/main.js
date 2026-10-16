@@ -2075,8 +2075,12 @@ if (btnAnalyzeRBF) {
             renderRBFAnalysisResults(data);
 
             // 自动应用推荐参数，并启用建模示意图
-            if (data.best && data.best.rbf_function) {
-                applyBestParams(data.best);
+            var analysisKeys = Object.keys(data.analysis || {});
+            if (analysisKeys.length > 0) {
+                var analysisResult = data.analysis[analysisKeys[0]];
+                if (analysisResult && analysisResult.best && analysisResult.best.rbf_function) {
+                    applyBestParams(analysisResult.best);
+                }
             }
             hasRunParamAnalysis = true;
             updateButtonStates();
@@ -2792,13 +2796,24 @@ function renderRBFAnalysisResults(data) {
     html += '           <span class="label">预期误差 (RMSE)：</span>';
     html += '           <span class="value" style="color:' + currentStd.color + ';font-size:18px;">';
     html += best.rmse.toFixed(2) + ' m';
-    html += '               <span class="rmse-tag" style="background:' + currentStd.color + '">' + currentStd.label + '</span>';
     html += '           </span>';
     html += '       </div>';
     html += '       <div class="best-param-row"><span class="label">MAE：</span><span class="value">' + best.mae.toFixed(2) + ' m</span></div>';
     html += '       <div class="best-param-row"><span class="label">最大误差：</span><span class="value">' + best.max_error.toFixed(2) + ' m</span></div>';
     if (best.composite_score !== undefined) {
-        html += '   <div class="best-param-row"><span class="label">综合评分：</span><span class="value">' + best.composite_score.toFixed(4) + '</span></div>';
+        var compStdRBF = currentStd;
+        if (compositeStandards.length > 0) {
+            for (var si2 = 0; si2 < compositeStandards.length; si2++) {
+                if (best.composite_score < compositeStandards[si2].max) { compStdRBF = compositeStandards[si2]; break; }
+            }
+        }
+        html += '   <div class="best-param-row">';
+        html += '       <span class="label">综合评分：</span>';
+        html += '       <span class="value" style="color:' + compStdRBF.color + ';font-size:18px;">';
+        html += best.composite_score.toFixed(4);
+        html += '           <span class="rmse-tag" style="background:' + compStdRBF.color + '">' + compStdRBF.label + '</span>';
+        html += '       </span>';
+        html += '   </div>';
     }
     html += '       <div class="best-param-row"><span class="label">建议：</span><span class="value">' + currentStd.suggestion + '</span></div>';
     html += '   </div>';
@@ -3190,13 +3205,24 @@ function renderKrigingParamResults(data) {
     html += '           <span class="label">预期误差 (RMSE)：</span>';
     html += '           <span class="value" style="color:' + currentStd.color + ';font-size:18px;">';
     html += best.rmse.toFixed(2) + ' m';
-    html += '               <span class="rmse-tag" style="background:' + currentStd.color + '">' + currentStd.label + '</span>';
     html += '           </span>';
     html += '       </div>';
     html += '       <div class="best-param-row"><span class="label">MAE：</span><span class="value">' + best.mae.toFixed(2) + ' m</span></div>';
     html += '       <div class="best-param-row"><span class="label">最大误差：</span><span class="value">' + best.max_error.toFixed(2) + ' m</span></div>';
     if (best.composite_score !== undefined) {
-        html += '   <div class="best-param-row"><span class="label">综合评分：</span><span class="value">' + best.composite_score.toFixed(4) + '</span></div>';
+        var compStdKrig = currentStd;
+        if (compositeStandards.length > 0) {
+            for (var si2 = 0; si2 < compositeStandards.length; si2++) {
+                if (best.composite_score < compositeStandards[si2].max) { compStdKrig = compositeStandards[si2]; break; }
+            }
+        }
+        html += '   <div class="best-param-row">';
+        html += '       <span class="label">综合评分：</span>';
+        html += '       <span class="value" style="color:' + compStdKrig.color + ';font-size:18px;">';
+        html += best.composite_score.toFixed(4);
+        html += '           <span class="rmse-tag" style="background:' + compStdKrig.color + '">' + compStdKrig.label + '</span>';
+        html += '       </span>';
+        html += '   </div>';
     }
     // 新增：块金值、基台值、块基比、变程、R²
     if (best.nugget != null) {

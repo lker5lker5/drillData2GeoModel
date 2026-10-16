@@ -531,13 +531,13 @@ def register_routes(app):
             survey_df = pd.read_excel(file_path, sheet_name='测斜表')
             litho_df = pd.read_excel(file_path, sheet_name='岩性表')
 
-            base_name = f'interactive_{datetime.now().strftime("%y%m%d%H%M")}'
+            base_name = f'interactive_{datetime.now().strftime("%y%m%d%H%M%S")}'
             output_dir = get_session_output_dir(session_id)
 
             if mode == 'drill_only':
                 # 钻孔专用模式：快速生成，不含地质体
                 html_path = generate_drill_model_only(
-                    loc_df, survey_df, litho_df, output_dir, base_name,
+                    loc_df, survey_df, litho_df, output_dir, f'{base_name}_drill',
                     drill_style=drill_style, drill_radius=drill_radius
                 )
                 log_and_print(session_id, "==> 生成钻孔专用3D模型（不含地质体）")

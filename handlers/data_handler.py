@@ -272,6 +272,43 @@ def register_routes(app):
         if old_hash != new_hash:
             clear_cache_by_params_change(session_id)
             log_and_print(session_id, f"==> 参数已变更，模型缓存已清除")
+
+        # 同步更新分析数据中的参数（确保数据说明 tab 始终展示最新参数）
+        try:
+            from .analysis_manager import load_analysis_data, save_analysis_data
+            analysis_data = load_analysis_data(session_id)
+            updated = False
+
+            # RBF 参数映射: param_key → analysis_data_key
+            rbf_key_map = {
+                'RBF_FUNCTION': 'rbf_function',
+                'RBF_SMOOTH': 'rbf_smooth',
+                'GRID_RESOLUTION': 'grid_resolution',
+                'N_LAYERS': 'n_layers'
+            }
+            if 'rbf' in analysis_data:
+                p = dict(analysis_data['rbf']['params'])
+                for pk, ak in rbf_key_map.items():
+                    if pk in params:
+                        p[ak] = params[pk]
+                analysis_data['rbf']['params'] = p
+                updated = True
+
+            # 克里金参数映射
+            kriging_key_map = {'KRIGING_VARIOGRAM': 'variogram_model'}
+            if 'kriging' in analysis_data:
+                p = dict(analysis_data['kriging']['params'])
+                for pk, ak in kriging_key_map.items():
+                    if pk in params:
+                        p[ak] = params[pk]
+                analysis_data['kriging']['params'] = p
+                updated = True
+
+            if updated:
+                save_analysis_data(session_id, analysis_data)
+                log_and_print(session_id, f"==> 分析数据参数已同步更新")
+        except Exception as e:
+            print(f"!!! 同步分析数据参数失败: {e}")
     
         return jsonify({
             'success': True,
@@ -407,6 +444,21 @@ def register_routes(app):
                 )
                 if cached:
                     log_and_print(session_id, "==> 命中克里金参数分析缓存")
+                    # 缓存命中时，也要确保分析数据中记录的是最佳参数
+                    try:
+                        from .analysis_manager import save_best_params
+                        cached_data = cached['result']
+                        best_key = target_layer
+                        cr = cached_data.get('analysis', {}).get(best_key, {})
+                        if cr.get('best'):
+                            b = cr['best']
+                            save_best_params(session_id, 'kriging', {
+                                'variogram_model': b.get('variogram_model'),
+                                'nlags': b.get('nlags'),
+                                'weight': b.get('weight')
+                            })
+                    except Exception:
+                        pass
                     return jsonify({
                         'success': True,
                         'from_cache': True,
@@ -508,6 +560,21 @@ def register_routes(app):
                     log_and_print(session_id, f"==> 克里金推荐: {b['variogram_model']} | 综合评分={cs_str} | RMSE={b['rmse']:.2f} MAE={b['mae']:.2f} max_err={b['max_error']:.2f}")
     
             # ========== 组织返回数据 ==========
+            # 记录最佳参数到分析数据，确保数据说明 tab 显示推荐参数
+            try:
+                from .analysis_manager import save_best_params
+                best_key = target_layer
+                best_result = analysis_results.get(best_key)
+                if best_result and best_result.get('best'):
+                    b = best_result['best']
+                    save_best_params(session_id, 'kriging', {
+                        'variogram_model': b.get('variogram_model'),
+                        'nlags': b.get('nlags'),
+                        'weight': b.get('weight')
+                    })
+            except Exception as e:
+                print(f"!!! 保存克里金最佳参数到分析数据失败: {e}")
+
             result_data = {
                 'target_layer': target_layer,
                 'analysis': analysis_results,
@@ -586,6 +653,23 @@ def register_routes(app):
                 )
                 if cached:
                     log_and_print(session_id, "==> 命中 RBF 参数分析缓存")
+                    # 缓存命中时，也要确保分析数据中记录的是最佳参数
+                    try:
+                        from .analysis_manager import save_best_params
+                        cached_data = cached['result']
+                        best_key = target_layer if target_layer != 'all' else 'all'
+                        cr = cached_data.get('analysis', {}).get(best_key, {})
+                        if cr.get('best'):
+                            b = cr['best']
+                            save_best_params(session_id, 'rbf', {
+                                'rbf_function': b.get('rbf_function'),
+                                'rbf_smooth': b.get('smooth'),
+                                'grid_resolution': '分析推荐',
+                                'n_layers': 'auto',
+                                'epsilon': b.get('epsilon')
+                            })
+                    except Exception:
+                        pass
                     return jsonify({
                         'success': True,
                         'from_cache': True,
@@ -688,6 +772,23 @@ def register_routes(app):
                     log_and_print(session_id, f"==> RBF 推荐: {b['rbf_function']}/smooth={b['smooth']} | 综合评分={cs_str} | RMSE={b['rmse']:.2f} MAE={b['mae']:.2f} max_err={b['max_error']:.2f}")
     
             # ========== 组织返回数据 ==========
+            # 记录最佳参数到分析数据，确保数据说明 tab 显示推荐参数
+            try:
+                from .analysis_manager import save_best_params
+                best_key = target_layer if target_layer != 'all' else 'all'
+                best_result = analysis_results.get(best_key)
+                if best_result and best_result.get('best'):
+                    b = best_result['best']
+                    save_best_params(session_id, 'rbf', {
+                        'rbf_function': b.get('rbf_function'),
+                        'rbf_smooth': b.get('smooth'),
+                        'grid_resolution': '分析推荐',
+                        'n_layers': 'auto',
+                        'epsilon': b.get('epsilon')
+                    })
+            except Exception as e:
+                print(f"!!! 保存 RBF 最佳参数到分析数据失败: {e}")
+
             result_data = {
                 'target_layer': target_layer,
                 'analysis': analysis_results,
@@ -1195,8 +1296,8 @@ def register_routes(app):
         from .analysis_manager import load_analysis_data
         data = load_analysis_data(session_id)
     
-        has_rbf = 'rbf' in data and len(data['rbf'].get('layers', [])) > 0
-        has_kriging = 'kriging' in data and len(data['kriging'].get('layers', [])) > 0
+        has_rbf = 'rbf' in data and data['rbf'].get('params') and len(data['rbf'].get('params', {})) > 0
+        has_kriging = 'kriging' in data and data['kriging'].get('params') and len(data['kriging'].get('params', {})) > 0
     
         if not has_rbf and not has_kriging:
             return jsonify({

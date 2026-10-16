@@ -41,6 +41,41 @@ def save_analysis_data(session_id, data):
         return False
 
 
+def clear_analysis_data(session_id):
+    """清除分析数据（参数变更时调用，避免数据报告显示过期参数）"""
+    path = get_analysis_data_path(session_id)
+    if os.path.exists(path):
+        try:
+            os.remove(path)
+            print(f"==> 分析数据已清除（参数已变更）")
+        except Exception as e:
+            print(f"!!! 清除分析数据失败: {e}")
+
+
+def save_best_params(session_id, mode, best_params):
+    """
+    将参数分析推荐的最佳参数保存到 analysis_data.json。
+    用于数据报告（数据说明 tab）显示正确的推荐参数。
+
+    参数:
+        session_id: 会话ID
+        mode: 'rbf' 或 'kriging'
+        best_params: 最佳参数字典
+    """
+    data = load_analysis_data(session_id)
+
+    if mode not in data:
+        data[mode] = {'params': {}, 'layers': [], 'created_at': None}
+
+    # 更新参数为最佳推荐参数，保留已有的 layers 数据
+    data[mode]['params'] = best_params
+    if not data[mode].get('created_at'):
+        data[mode]['created_at'] = datetime.now().isoformat()
+
+    save_analysis_data(session_id, data)
+    print(f"==> {mode.upper()} 最佳参数已记录到分析数据")
+
+
 def _numpy_to_list(arr):
     """把 numpy 数组转为可 JSON 序列化的列表"""
     if arr is None:

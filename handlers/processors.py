@@ -310,6 +310,88 @@ def build_plotly_cylinder_mesh(xs, ys, zs, radius=3.0, sides=8):
     return (vertices[:, 0].tolist(), vertices[:, 1].tolist(), vertices[:, 2].tolist(),
             faces_i, faces_j, faces_k)
 
+
+def build_boundary_wall_mesh(X, Y, Z_top, Z_bot, color_str, max_vertices=80):
+    """
+    为地质体构建侧面墙体 Mesh3d trace。
+    沿凸包边界连接顶面和底面，形成闭合的侧墙。
+
+    参数:
+        X, Y: shape=(grid_res, grid_res) 的 2D 网格坐标
+        Z_top, Z_bot: shape=(grid_res, grid_res) 的顶/底面高程，NaN 表示无效区域
+        color_str: 'rgb(r,g,b)' 颜色字符串
+        max_vertices: 边界顶点数上限（降采样），默认 80
+
+    返回:
+        go.Mesh3d trace，或 None（有效点不足以构成边界时）
+    """
+    valid = ~np.isnan(Z_top)
+    n_valid = int(np.sum(valid))
+    if n_valid < 3:
+        return None
+
+    xv = X[valid]
+    yv = Y[valid]
+    zv_top = Z_top[valid]
+    zv_bot = Z_bot[valid]
+
+    points = np.column_stack([xv, yv])
+
+    try:
+        hull = ConvexHull(points)
+    except Exception:
+        return None
+
+    hull_vertices = hull.vertices
+    n_boundary = len(hull_vertices)
+
+    if n_boundary < 3:
+        return None
+
+    # 降采样：最多 max_vertices 个边界顶点
+    if n_boundary > max_vertices:
+        step = max(1, n_boundary // max_vertices)
+        hull_vertices = hull_vertices[::step]
+        n_boundary = len(hull_vertices)
+        if n_boundary < 3:
+            return None
+
+    bx = xv[hull_vertices]       # 边界 X 坐标
+    by = yv[hull_vertices]       # 边界 Y 坐标
+    bz_top = zv_top[hull_vertices]  # 边界顶面 Z
+    bz_bot = zv_bot[hull_vertices]  # 边界底面 Z
+
+    # 构建顶点数组：上环（0..N-1）+ 下环（N..2N-1）
+    vx = np.concatenate([bx, bx])
+    vy = np.concatenate([by, by])
+    vz = np.concatenate([bz_top, bz_bot])
+
+    # 构建三角面（quad strip，与 build_plotly_cylinder_mesh 模式一致）
+    faces_i, faces_j, faces_k = [], [], []
+    for i in range(n_boundary):
+        i_next = (i + 1) % n_boundary
+        # 顶环点 i, i_next，底环点 n_boundary+i_next, n_boundary+i
+        # 三角 1: top_i, top_{i+1}, bot_{i+1}
+        faces_i.append(i)
+        faces_j.append(i_next)
+        faces_k.append(n_boundary + i_next)
+        # 三角 2: top_i, bot_{i+1}, bot_i
+        faces_i.append(i)
+        faces_j.append(n_boundary + i_next)
+        faces_k.append(n_boundary + i)
+
+    return go.Mesh3d(
+        x=vx, y=vy, z=vz,
+        i=faces_i, j=faces_j, k=faces_k,
+        color=color_str,
+        opacity=0.85,
+        flatshading=True,
+        showscale=False,
+        showlegend=False,
+        hoverinfo='skip',
+        name=''
+    )
+
 # ==================== 轨迹计算 ====================
 def compute_trajectory(df_survey):
     """
@@ -536,14 +618,17 @@ def draw_single_model_view(volume_data, loc_df, survey_df, litho_df,
     
     # 3. 坐标轴样式
     if labeled:
-        # 标注版：完整坐标轴
+        # 标注版：完整坐标轴，透明背景 + 网格线
         ax.set_xlabel('开孔坐标E (m)')
         ax.set_ylabel('开孔坐标N (m)')
         ax.set_zlabel('海拔高度 (m)')
+        ax.xaxis.pane.fill = False
+        ax.yaxis.pane.fill = False
+        ax.zaxis.pane.fill = False
         ax.grid(True, alpha=0.3)
     else:
         # ========== 无标注版：仅保留 Z 轴 + 深度标尺 ==========
-        # 隐藏 X/Y 轴刻度和标签
+        # 隐藏所有轴（仅保留 Z 轴线+刻度）
         ax.set_xticks([]); ax.set_yticks([])
         ax.set_xlabel(''); ax.set_ylabel('')
         ax.tick_params(axis='x', which='both', length=0, labelbottom=False)
@@ -560,7 +645,6 @@ def draw_single_model_view(volume_data, loc_df, survey_df, litho_df,
         ax.zaxis.line.set_visible(True)
 
         # 让 Z 轴刻度自动生成清晰的刻度值
-        #    （matplotlib 会基于 zlim 自动生成刻度）
         ax.zaxis.set_tick_params(pad=5)
 
         # 关闭网格
@@ -704,6 +788,10 @@ def generate_drill_views(loc_df, survey_df, litho_df, output_dir, base_name):
         ax.set_xlabel('北 (m)')
         ax.set_ylabel('东 (m)')
         ax.set_zlabel('海拔 (m)')
+        ax.xaxis.pane.fill = False
+        ax.yaxis.pane.fill = False
+        ax.zaxis.pane.fill = False
+        ax.grid(True, alpha=0.3)
         ax.view_init(elev=config['elev'], azim=config['azim'])
 
         all_n_rel = loc_df_rel['开孔坐标N'].values
@@ -755,11 +843,12 @@ def generate_drill_model_only(loc_df, survey_df, litho_df, output_dir, base_name
 
     hole_ids = loc_df['钻孔编号'].unique()
 
-    all_n = loc_df['开孔坐标N'].values
-    all_e = loc_df['开孔坐标E'].values
-    all_z = loc_df['开孔高程R'].values
-    z_min_all = min(all_z)
+    # 与 matplotlib generate_drill_views 一致：使用相对坐标（避免大绝对值影响长宽比）
+    base_n = loc_df['开孔坐标N'].min()
+    base_e = loc_df['开孔坐标E'].min()
 
+    # 收集所有钻点 Z 值，用于计算数据驱动的 Z 范围
+    all_z_pts = list(loc_df['开孔高程R'].values)
     for hid in hole_ids:
         surv = survey_df[survey_df['钻孔编号'] == hid]
         if len(surv) > 0:
@@ -767,7 +856,14 @@ def generate_drill_model_only(loc_df, survey_df, litho_df, output_dir, base_name
             row = loc_df[loc_df['钻孔编号'] == hid].iloc[0]
             zs += row['开孔高程R']
             if len(zs) > 0:
-                z_min_all = min(z_min_all, np.min(zs))
+                all_z_pts.extend(zs.tolist())
+
+    all_z_arr = np.array(all_z_pts)
+    z_min_data = np.min(all_z_arr)
+    z_max_data = np.max(all_z_arr)
+    z_margin = max((z_max_data - z_min_data) * 0.1, 5)
+    z_range_min = z_min_data - z_margin
+    z_range_max = z_max_data + z_margin
 
     total_segments = len(litho_df)
 
@@ -786,8 +882,8 @@ def generate_drill_model_only(loc_df, survey_df, litho_df, output_dir, base_name
     # ==== 仅绘制钻孔（无地质体）====
     for hid in hole_ids:
         row = loc_df[loc_df['钻孔编号'] == hid].iloc[0]
-        x0 = row['开孔坐标N']
-        y0 = row['开孔坐标E']
+        x0 = row['开孔坐标N'] - base_n
+        y0 = row['开孔坐标E'] - base_e
         z0 = row['开孔高程R']
 
         surv = survey_df[survey_df['钻孔编号'] == hid]
@@ -828,6 +924,7 @@ def generate_drill_model_only(loc_df, survey_df, litho_df, output_dir, base_name
             if len(x) == 0:
                 continue
 
+            alpha = color[3]
             color_str = f'rgb({int(color[0]*255)}, {int(color[1]*255)}, {int(color[2]*255)})'
 
             if use_style == 'cylinder':
@@ -838,7 +935,8 @@ def generate_drill_model_only(loc_df, survey_df, litho_df, output_dir, base_name
                     x=cyl_x, y=cyl_y, z=cyl_z,
                     i=cyl_i, j=cyl_j, k=cyl_k,
                     color=color_str,
-                    opacity=0.9,
+                    opacity=alpha,
+                    flatshading=True,
                     showlegend=False,
                     hovertemplate=f'钻孔: {hid}<br>岩性: {lith_name}<extra></extra>'
                 ))
@@ -846,7 +944,7 @@ def generate_drill_model_only(loc_df, survey_df, litho_df, output_dir, base_name
                 fig.add_trace(go.Scatter3d(
                     x=x, y=y, z=z,
                     mode='lines',
-                    line=dict(color=color_str, width=5),
+                    line=dict(color=f'rgba({int(color[0]*255)},{int(color[1]*255)},{int(color[2]*255)},{alpha})', width=6),
                     showlegend=False,
                     hovertemplate=f'钻孔: {hid}<br>岩性: {lith_name}<br>高程: %{{z:.1f}}m<extra></extra>'
                 ))
@@ -861,11 +959,18 @@ def generate_drill_model_only(loc_df, survey_df, litho_df, output_dir, base_name
         ))
 
     margin = 20
+    n_rel = loc_df['开孔坐标N'].values - base_n
+    e_rel = loc_df['开孔坐标E'].values - base_e
     fig.update_layout(
         scene=dict(
-            xaxis=dict(title='开孔坐标N (m)', range=[all_n.min() - margin, all_n.max() + margin]),
-            yaxis=dict(title='开孔坐标E (m)', range=[all_e.min() - margin, all_e.max() + margin]),
-            zaxis=dict(title='海拔高度 (m)', range=[z_min_all - 10, all_z.max() + 5]),
+            xaxis=dict(title='北 (m)', range=[n_rel.min() - margin, n_rel.max() + margin],
+                       showgrid=True, zeroline=False, showbackground=False),
+            yaxis=dict(title='东 (m)', range=[e_rel.min() - margin, e_rel.max() + margin],
+                       showgrid=True, zeroline=False, showbackground=False),
+            zaxis=dict(title='海拔 (m)', range=[z_range_min, z_range_max],
+                       showgrid=True, zeroline=False, showbackground=False),
+            aspectmode='data',
+            bgcolor='rgba(0,0,0,0)',
             camera=dict(
                 eye=dict(x=1.5, y=1.5, z=1.0),
                 center=dict(x=0, y=0, z=0)
@@ -873,6 +978,9 @@ def generate_drill_model_only(loc_df, survey_df, litho_df, output_dir, base_name
         ),
         autosize=True,
         title='交互式钻孔模型',
+        legend=dict(
+            x=1.02, y=1, xanchor='left', yanchor='top', font=dict(size=11)
+        ),
         margin=dict(l=5, r=5, t=40, b=5),
         paper_bgcolor='rgba(0,0,0,0)',
         plot_bgcolor='rgba(0,0,0,0)'
@@ -927,9 +1035,8 @@ def generate_interactive_model(loc_df, survey_df, litho_df, output_dir, base_nam
     
     all_n = loc_df['开孔坐标N'].values
     all_e = loc_df['开孔坐标E'].values
-    all_z = loc_df['开孔高程R'].values
-    z_min_all = min(all_z)
-    
+    all_z_arr = list(loc_df['开孔高程R'].values)
+
     for hid in hole_ids:
         surv = survey_df[survey_df['钻孔编号'] == hid]
         if len(surv) > 0:
@@ -937,8 +1044,15 @@ def generate_interactive_model(loc_df, survey_df, litho_df, output_dir, base_nam
             row = loc_df[loc_df['钻孔编号'] == hid].iloc[0]
             zs += row['开孔高程R']
             if len(zs) > 0:
-                z_min_all = min(z_min_all, np.min(zs))
-    
+                all_z_arr.extend(zs.tolist())
+
+    all_z_arr = np.array(all_z_arr)
+    z_min_data = np.min(all_z_arr)
+    z_max_data = np.max(all_z_arr)
+    z_margin = max((z_max_data - z_min_data) * 0.1, 5)
+    z_range_min = z_min_data - z_margin
+    z_range_max = z_max_data + z_margin
+
     total_segments = len(litho_df)
 
     if drill_style == 'line' or total_segments > DRILL_FORCE_LINE_THRESHOLD:
@@ -952,32 +1066,94 @@ def generate_interactive_model(loc_df, survey_df, litho_df, output_dir, base_nam
         print(f"==> Plotly: 使用 {use_style} 模式（段数 {total_segments}）")
 
     fig = go.Figure()
-    
-    # 绘制地质体
-    for lith, data in volume_data.items():
-        color = data['color']
+
+    # ---- 记录地质体 trace 元信息（供分层观察滑块使用） ----
+    # 格式: [{trace, lith, type: 'surface'|'mesh', x, z}, ...]
+    #  type='surface' → x/z 是 2D 数组；type='mesh' → x/z 是 1D 顶点数组
+    body_meta = []
+    lith_layer_counts = {}     # {lith: n_layers}
+    trace_idx = 0              # figure-level trace index
+
+    # 绘制地质体：每个岩性 = 一个闭合实体（顶面 + 中间层 + 底面 + 侧面 + 图例标记）
+    for lith, body_data in bodies.items():
+        color = body_data['color']
         color_str = f'rgb({int(color[0]*255)}, {int(color[1]*255)}, {int(color[2]*255)})'
-        layers = data['layers']
-        
-        if not layers:
-            continue
-        
+        vol_data = volume_data.get(lith)
+        layers = vol_data['layers'] if vol_data else []
+        n_layers_total = len(layers)
+        lith_layer_counts[lith] = n_layers_total
+
+        import math
+
+        # ---- 1) 顶面 Surface ----
+        z_top = body_data['Z_top']
+        show_legend = True
+        opacity = 0.55
+        fig.add_trace(go.Surface(
+            x=body_data['X'], y=body_data['Y'], z=z_top,
+            colorscale=[[0, color_str], [1, color_str]],
+            opacity=opacity,
+            showscale=False,
+            showlegend=show_legend,
+            name=lith,
+            hoverinfo='skip'
+        ))
+        x_top_safe = [[float(v) for v in row] for row in body_data['X']]
+        z_top_safe = [[None if math.isnan(v) else float(v) for v in row] for row in z_top]
+        body_meta.append({'trace': trace_idx, 'lith': lith, 'type': 'surface', 'x': x_top_safe, 'z': z_top_safe})
+        trace_idx += 1
+        show_legend = False
+
+        # ---- 2) 中间层 Surface（保留体积感） ----
         for k, Z in enumerate(layers):
-            show_legend = (k == 0)
-            opacity = 0.2 + 0.5 * (k / (len(layers)-1)) if len(layers)>1 else 0.5
+            if k == 0 or k == n_layers_total - 1:
+                continue
+            layer_opacity = 0.15 + 0.35 * (k / (n_layers_total - 1)) if n_layers_total > 1 else 0.3
             fig.add_trace(go.Surface(
-                x=data['X'], y=data['Y'], z=Z,
+                x=vol_data['X'], y=vol_data['Y'], z=Z,
                 colorscale=[[0, color_str], [1, color_str]],
-                opacity=opacity,
+                opacity=layer_opacity,
                 showscale=False,
-                showlegend=show_legend,
-                name=lith if show_legend else "",
+                showlegend=False,
+                name='',
                 hoverinfo='skip'
             ))
-        
+            x_safe = [[float(v) for v in row] for row in vol_data['X']]
+            z_safe = [[None if math.isnan(v) else float(v) for v in row] for row in Z]
+            body_meta.append({'trace': trace_idx, 'lith': lith, 'type': 'surface', 'x': x_safe, 'z': z_safe})
+            trace_idx += 1
+
+        # ---- 3) 底面 Surface ----
+        z_bot = body_data['Z_bot']
+        fig.add_trace(go.Surface(
+            x=body_data['X'], y=body_data['Y'], z=z_bot,
+            colorscale=[[0, color_str], [1, color_str]],
+            opacity=opacity,
+            showscale=False,
+            showlegend=False,
+            name='',
+            hoverinfo='skip'
+        ))
+        x_bot_safe = [[float(v) for v in row] for row in body_data['X']]
+        z_bot_safe = [[None if math.isnan(v) else float(v) for v in row] for row in z_bot]
+        body_meta.append({'trace': trace_idx, 'lith': lith, 'type': 'surface', 'x': x_bot_safe, 'z': z_bot_safe})
+        trace_idx += 1
+
+        # ---- 4) 侧面墙体 Mesh3d ----
+        wall = build_boundary_wall_mesh(
+            body_data['X'], body_data['Y'], z_top, z_bot, color_str
+        )
+        if wall is not None:
+            fig.add_trace(wall)
+            x_wall_flat = [float(v) for v in wall.x]
+            z_wall_flat = [None if math.isnan(float(v)) else float(v) for v in wall.z]
+            body_meta.append({'trace': trace_idx, 'lith': lith, 'type': 'mesh', 'x': x_wall_flat, 'z': z_wall_flat})
+            trace_idx += 1
+
+        # ---- 5) 图例标记（占位 trace，不参与偏移） ----
         dummy_x = all_n.min() - 500
         dummy_y = all_e.min() - 500
-        dummy_z = z_min_all - 500
+        dummy_z = z_min_data - 500
         fig.add_trace(go.Scatter3d(
             x=[dummy_x], y=[dummy_y], z=[dummy_z],
             mode='markers',
@@ -986,6 +1162,7 @@ def generate_interactive_model(loc_df, survey_df, litho_df, output_dir, base_nam
             showlegend=True,
             hoverinfo='skip'
         ))
+        trace_idx += 1
     
     # 绘制钻孔
     for hid in hole_ids:
@@ -1031,9 +1208,10 @@ def generate_interactive_model(loc_df, survey_df, litho_df, output_dir, base_nam
             x, y, z = get_interpolated_coords(lengths, xs, ys, zs, d_sample)
             if len(x) == 0:
                 continue
-            
+
+            alpha = color[3]
             color_str = f'rgb({int(color[0]*255)}, {int(color[1]*255)}, {int(color[2]*255)})'
-            
+
             if use_style == 'cylinder':
                 # 生成 Plotly 圆柱网格
                 cyl_x, cyl_y, cyl_z, cyl_i, cyl_j, cyl_k = build_plotly_cylinder_mesh(
@@ -1043,7 +1221,8 @@ def generate_interactive_model(loc_df, survey_df, litho_df, output_dir, base_nam
                     x=cyl_x, y=cyl_y, z=cyl_z,
                     i=cyl_i, j=cyl_j, k=cyl_k,
                     color=color_str,
-                    opacity=0.9,
+                    opacity=alpha,
+                    flatshading=True,
                     showlegend=False,
                     hovertemplate=f'钻孔: {hid}<br>岩性: {lith_name}<extra></extra>'
                 ))
@@ -1052,7 +1231,7 @@ def generate_interactive_model(loc_df, survey_df, litho_df, output_dir, base_nam
                 fig.add_trace(go.Scatter3d(
                     x=x, y=y, z=z,
                     mode='lines',
-                    line=dict(color=color_str, width=5),
+                    line=dict(color=f'rgba({int(color[0]*255)},{int(color[1]*255)},{int(color[2]*255)},{alpha})', width=6),
                     showlegend=False,
                     hovertemplate=f'钻孔: {hid}<br>岩性: {lith_name}<br>高程: %{{z:.1f}}m<extra></extra>'
                 )) 
@@ -1067,11 +1246,22 @@ def generate_interactive_model(loc_df, survey_df, litho_df, output_dir, base_nam
         ))
     
     margin = 20
+    x_min, x_max = all_n.min()-margin, all_n.max()+margin
+    # 如有多个岩性，预扩 X 范围以容纳分层观察的水平展开
+    if len(lith_layer_counts) >= 2:
+        x_pad = (x_max - x_min) * 0.4
+        x_min -= x_pad
+        x_max += x_pad
     fig.update_layout(
         scene=dict(
-            xaxis=dict(title='开孔坐标N (m)', range=[all_n.min()-margin, all_n.max()+margin]),
-            yaxis=dict(title='开孔坐标E (m)', range=[all_e.min()-margin, all_e.max()+margin]),
-            zaxis=dict(title='海拔高度 (m)', range=[z_min_all-10, all_z.max()+5]),
+            xaxis=dict(title='开孔坐标N (m)', range=[x_min, x_max],
+                       showgrid=True, zeroline=False, showbackground=False),
+            yaxis=dict(title='开孔坐标E (m)', range=[all_e.min()-margin, all_e.max()+margin],
+                       showgrid=True, zeroline=False, showbackground=False),
+            zaxis=dict(title='海拔高度 (m)', range=[z_range_min, z_range_max],
+                       showgrid=True, zeroline=False, showbackground=False),
+            aspectmode='data',
+            bgcolor='rgba(0,0,0,0)',
             camera=dict(
                 eye=dict(x=1.5, y=1.5, z=1.0),
                 center=dict(x=0, y=0, z=0)
@@ -1092,8 +1282,97 @@ def generate_interactive_model(loc_df, survey_df, litho_df, output_dir, base_nam
     )
 
     html_path = os.path.join(output_dir, f'{base_name}.html')
-    fig.write_html(html_path, config={'responsive': True, 'scrollZoom': True, 'displayModeBar': True})
-    
+    fig.write_html(html_path, config={'responsive': True, 'scrollZoom': True, 'displayModeBar': True},
+                   div_id='layer-explode-model')
+
+    # ======== 注入分层观察滑块（仅当有 ≥2 个岩性时） ========
+    if len(lith_layer_counts) >= 2:
+        import math
+        # 按各岩性所有层的 Z 中位数排序（深层在下，浅层在上）
+        lith_median_z = {}
+        for m in body_meta:
+            if m['type'] == 'mesh':
+                vals = [v for v in m['z'] if v is not None]
+            else:
+                vals = [v for row in m['z'] for v in row if v is not None]
+            if vals:
+                lith_median_z.setdefault(m['lith'], []).extend(vals)
+        lith_order = sorted(lith_median_z.keys(),
+                            key=lambda l: sorted(lith_median_z[l])[len(lith_median_z[l])//2])
+
+        # 水平分离间距：基于 X 范围，保证展开后不重叠
+        x_range = all_n.max() - all_n.min()
+        sep_per_lith = max(x_range * 0.35, 30.0)
+
+        with open(html_path, 'r') as fh:
+            html = fh.read()
+
+        explosion_js = f"""
+<style>
+#layer-explode-panel{{position:absolute;bottom:16px;left:50%;transform:translateX(-50%);background:rgba(28,28,28,0.9);color:#e0e0e0;padding:8px 20px;border-radius:8px;z-index:9999;font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;font-size:13px;display:flex;gap:14px;align-items:center;box-shadow:0 2px 14px rgba(0,0,0,0.35)}}
+#layer-explode-slider{{width:240px;accent-color:#4fc3f7;cursor:pointer}}
+#layer-explode-label{{min-width:44px;text-align:center;font-weight:600;color:#4fc3f7}}
+#layer-explode-reset{{background:rgba(255,255,255,0.12);color:#ccc;border:1px solid rgba(255,255,255,0.2);border-radius:4px;padding:4px 12px;cursor:pointer;font-size:12px;transition:background .15s}}
+#layer-explode-reset:hover{{background:rgba(255,255,255,0.22)}}
+</style>
+<div id="layer-explode-panel">
+  <span title="拖拽滑块将各地层左右展开为独立切片观察">📐 分层观察</span>
+  <input type="range" id="layer-explode-slider" min="0" max="100" value="0" step="1">
+  <span id="layer-explode-label">0%</span>
+  <button id="layer-explode-reset">重置</button>
+</div>
+<script>
+(function(){{
+var BODY={json.dumps(body_meta, separators=(',', ':'))};
+var LITH_ORDER={json.dumps(lith_order)};
+var SEP={sep_per_lith:.2f};
+var N_LITH=LITH_ORDER.length;
+var gd=document.getElementById('layer-explode-model');
+if(!gd)gd=document.querySelector('.js-plotly-plot');
+if(!gd)return;
+
+// 使用 requestAnimationFrame 批处理，避免滑块快速拖拽时多次重绘
+var _rafId=null, _pendingFactor=null;
+
+function applySpread(factor){{
+ _pendingFactor=factor;
+ if(_rafId!==null)return;
+ _rafId=requestAnimationFrame(function(){{
+  var f=_pendingFactor; _pendingFactor=null; _rafId=null;
+  var xList=[],xIx=[],zList=[],zIx=[];
+  var center=(N_LITH-1)/2;
+  for(var i=0;i<BODY.length;i++){{
+   var m=BODY[i],li=LITH_ORDER.indexOf(m.lith);
+   if(li<0)continue;
+   var offX=(li-center)*f*SEP;
+   var offZ=Math.abs(li-center)*f*SEP*0.06;
+   if(m.type==='mesh'){{
+    xList.push(m.x.map(function(v){{return v+offX;}}));
+    zList.push(m.z.map(function(v){{return v===null?null:v+offZ;}}));
+   }}else{{
+    xList.push(m.x.map(function(r){{return r.map(function(v){{return v+offX;}});}}));
+    zList.push(m.z.map(function(r){{return r.map(function(v){{return v===null?null:v+offZ;}});}}));
+   }}
+   xIx.push(m.trace);zIx.push(m.trace);
+  }}
+  // 单次 restyle 同时更新 x 和 z，减少重绘次数
+  Plotly.restyle(gd,{{x:xList,z:zList}},xIx);
+ }});
+}}
+
+var sl=document.getElementById('layer-explode-slider');
+var lb=document.getElementById('layer-explode-label');
+sl.addEventListener('input',function(){{var f=parseInt(this.value)/100;lb.textContent=Math.round(f*100)+'%';applySpread(f)}});
+document.getElementById('layer-explode-reset').addEventListener('click',function(){{sl.value=0;lb.textContent='0%';applySpread(0)}});
+}})();
+</script>
+"""  # f-string double-braces for literal { in JS
+
+        # 注入到 </body> 之前
+        html = html.replace('</body>', explosion_js + '\n</body>')
+        with open(html_path, 'w') as fh:
+            fh.write(html)
+
     return html_path
 
 # ==================== AI建模 ====================

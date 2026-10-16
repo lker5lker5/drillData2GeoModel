@@ -132,7 +132,8 @@ def clear_cache(session_id, task_type=None):
 
 def clear_cache_by_params_change(session_id):
     """
-    当参数变化时，清除该 session 的模型、AI 模型和克里金缓存。
+    当参数变化时，清除该 session 的模型、AI 模型和克里金缓存，
+    同时清除分析数据以免数据报告显示过期参数。
     """
     meta = load_cache_meta(session_id)
     for key in ['model', 'ai_model', 'kriging', 'kriging_surface',

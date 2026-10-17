@@ -373,12 +373,12 @@ RBF_RMSE_STANDARDS = [
     {'max': 99999, 'label': '差', 'suggestion': '数据可能有问题，或控制点分布太稀疏', 'color': '#C62828'},
 ]
 
-# 综合评分参考标准（composite_score 为归一化加权值，0=最优）
+# 综合评分参考标准（composite_score 为归一化加权值，1=最优，0=最差）
 RBF_COMPOSITE_STANDARDS = [
-    {'max': 0.10, 'label': '优秀', 'suggestion': '各指标均表现优异，直接采用', 'color': '#2E7D32'},
-    {'max': 0.25, 'label': '良好', 'suggestion': '综合表现较好，可用于生产',   'color': '#1565C0'},
-    {'max': 0.50, 'label': '一般', 'suggestion': '部分指标偏高，建议检查',     'color': '#F57C00'},
-    {'max': 99999, 'label': '差', 'suggestion': '多项指标均不理想，需排查数据或调整参数', 'color': '#C62828'},
+    {'min': 0.90, 'label': '优秀', 'suggestion': '各指标均表现优异，直接采用', 'color': '#2E7D32'},
+    {'min': 0.75, 'label': '良好', 'suggestion': '综合表现较好，可用于生产',   'color': '#1565C0'},
+    {'min': 0.50, 'label': '一般', 'suggestion': '部分指标偏高，建议检查',     'color': '#F57C00'},
+    {'min': 0.00, 'label': '差',   'suggestion': '多项指标均不理想，需排查数据或调整参数', 'color': '#C62828'},
 ]
 
 # ==================== 模型质量评估配置 ====================

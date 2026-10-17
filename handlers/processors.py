@@ -995,7 +995,63 @@ def generate_drill_model_only(loc_df, survey_df, litho_df, output_dir, base_name
     return html_path
 
 
-# ==================== 交互式模型生成（已有，不修改） ====================
+# ==================== 网格数据序列化（体积估算用） ====================
+def _serialize_grid_data(bodies):
+    """
+    将 bodies 网格数据序列化为紧凑 JSON，嵌入 Plotly HTML 供体积估算使用。
+
+    参数:
+        bodies: build_geological_bodies_with_volume_v2 返回的 bodies dict
+               {lith: {X(2D), Y(2D), Z_top(2D), Z_bot(2D), color(r,g,b,a)}}
+    返回:
+        '<script id="geobody-grid-data" type="application/json">{...}</script>' 字符串
+    """
+    if not bodies:
+        return ''
+
+    import math
+
+    first = next(iter(bodies.values()))
+    X, Y = first['X'], first['Y']
+    nx, ny = X.shape[1], X.shape[0]
+    dx = float(X[0, 1] - X[0, 0]) if nx > 1 else 0
+    dy = float(Y[1, 0] - Y[0, 0]) if ny > 1 else 0
+    x_min = float(X[0, 0])
+    x_max = float(X[0, -1])
+    y_min = float(Y[0, 0])
+    y_max = float(Y[-1, 0])
+
+    z_data = {}
+    colors = {}
+    for lith, body in bodies.items():
+        # 只存 Z_top 和 Z_bot，NaN 序列化为 null
+        def _to_float_or_none(v):
+            return None if math.isnan(v) else float(v)
+
+        z_top_list = [[_to_float_or_none(v) for v in row] for row in body['Z_top']]
+        z_bot_list = [[_to_float_or_none(v) for v in row] for row in body['Z_bot']]
+        z_data[lith] = {
+            'z_top': z_top_list,
+            'z_bot': z_bot_list
+        }
+        r, g, b = body['color'][:3]
+        colors[lith] = f'rgb({int(r*255)},{int(g*255)},{int(b*255)})'
+
+    grid_dict = {
+        'liths': list(bodies.keys()),
+        'colors': colors,
+        'x_range': [x_min, x_max],
+        'y_range': [y_min, y_max],
+        'nx': nx, 'ny': ny,
+        'dx': dx, 'dy': dy,
+        'z_data': z_data
+    }
+    grid_json = json.dumps(grid_dict, separators=(',', ':'))
+
+    return f'<script id="geobody-grid-data" type="application/json">{grid_json}</script>'
+
+
+# ==================== 交互式模型生成 ====================
 def generate_interactive_model(loc_df, survey_df, litho_df, output_dir, base_name,
                                 drill_style=None, drill_radius=None,
                                 n_layers=None, rbf_function=None,
@@ -1072,6 +1128,7 @@ def generate_interactive_model(loc_df, survey_df, litho_df, output_dir, base_nam
     #  type='surface' → x/z 是 2D 数组；type='mesh' → x/z 是 1D 顶点数组
     body_meta = []
     lith_layer_counts = {}     # {lith: n_layers}
+    lith_trace_map = {}        # {lith: [trace_idx, ...]}  用于岩性显隐开关（不含图例标记）
     trace_idx = 0              # figure-level trace index
 
     # 绘制地质体：每个岩性 = 一个闭合实体（顶面 + 中间层 + 底面 + 侧面 + 图例标记）
@@ -1082,6 +1139,7 @@ def generate_interactive_model(loc_df, survey_df, litho_df, output_dir, base_nam
         layers = vol_data['layers'] if vol_data else []
         n_layers_total = len(layers)
         lith_layer_counts[lith] = n_layers_total
+        lith_trace_map[lith] = []  # 收集该岩性除图例标记外的所有 trace 索引
 
         import math
 
@@ -1101,6 +1159,7 @@ def generate_interactive_model(loc_df, survey_df, litho_df, output_dir, base_nam
         x_top_safe = [[float(v) for v in row] for row in body_data['X']]
         z_top_safe = [[None if math.isnan(v) else float(v) for v in row] for row in z_top]
         body_meta.append({'trace': trace_idx, 'lith': lith, 'type': 'surface', 'x': x_top_safe, 'z': z_top_safe})
+        lith_trace_map[lith].append(trace_idx)
         trace_idx += 1
         show_legend = False
 
@@ -1121,6 +1180,7 @@ def generate_interactive_model(loc_df, survey_df, litho_df, output_dir, base_nam
             x_safe = [[float(v) for v in row] for row in vol_data['X']]
             z_safe = [[None if math.isnan(v) else float(v) for v in row] for row in Z]
             body_meta.append({'trace': trace_idx, 'lith': lith, 'type': 'surface', 'x': x_safe, 'z': z_safe})
+            lith_trace_map[lith].append(trace_idx)
             trace_idx += 1
 
         # ---- 3) 底面 Surface ----
@@ -1137,6 +1197,7 @@ def generate_interactive_model(loc_df, survey_df, litho_df, output_dir, base_nam
         x_bot_safe = [[float(v) for v in row] for row in body_data['X']]
         z_bot_safe = [[None if math.isnan(v) else float(v) for v in row] for row in z_bot]
         body_meta.append({'trace': trace_idx, 'lith': lith, 'type': 'surface', 'x': x_bot_safe, 'z': z_bot_safe})
+        lith_trace_map[lith].append(trace_idx)
         trace_idx += 1
 
         # ---- 4) 侧面墙体 Mesh3d ----
@@ -1148,9 +1209,10 @@ def generate_interactive_model(loc_df, survey_df, litho_df, output_dir, base_nam
             x_wall_flat = [float(v) for v in wall.x]
             z_wall_flat = [None if math.isnan(float(v)) else float(v) for v in wall.z]
             body_meta.append({'trace': trace_idx, 'lith': lith, 'type': 'mesh', 'x': x_wall_flat, 'z': z_wall_flat})
+            lith_trace_map[lith].append(trace_idx)
             trace_idx += 1
 
-        # ---- 5) 图例标记（占位 trace，不参与偏移） ----
+        # ---- 5) 图例标记（占位 trace，不参与显隐控制，保持图例始终完整） ----
         dummy_x = all_n.min() - 500
         dummy_y = all_e.min() - 500
         dummy_z = z_min_data - 500
@@ -1163,7 +1225,10 @@ def generate_interactive_model(loc_df, survey_df, litho_df, output_dir, base_nam
             hoverinfo='skip'
         ))
         trace_idx += 1
-    
+
+    # 记录钻孔起始 trace 索引（用于钻孔显隐开关）
+    drill_trace_start = trace_idx
+
     # 绘制钻孔
     for hid in hole_ids:
         row = loc_df[loc_df['钻孔编号'] == hid].iloc[0]
@@ -1285,60 +1350,131 @@ def generate_interactive_model(loc_df, survey_df, litho_df, output_dir, base_nam
     fig.write_html(html_path, config={'responsive': True, 'scrollZoom': True, 'displayModeBar': True},
                    div_id='layer-explode-model')
 
-    # ======== 注入分层观察滑块（仅当有 ≥2 个岩性时） ========
-    if len(lith_layer_counts) >= 2:
+    # ======== 注入控制面板（分层观察滑块 + 岩性/钻孔显隐，统一 div） ========
+    # 读取 HTML 文件
+    with open(html_path, 'r') as fh:
+        html = fh.read()
+
+    injection_parts = []
+
+    # ---- 控制面板（单一面板，包含分层观察 + 岩性显隐 + 钻孔显隐） ----
+    drill_trace_indices = list(range(drill_trace_start, len(fig.data)))
+    has_explode = len(lith_layer_counts) >= 2
+    has_drills = bool(drill_trace_indices)
+
+    if has_explode or has_drills:
         import math
-        # 按各岩性所有层的 Z 中位数排序（深层在下，浅层在上）
-        lith_median_z = {}
-        for m in body_meta:
-            if m['type'] == 'mesh':
-                vals = [v for v in m['z'] if v is not None]
-            else:
-                vals = [v for row in m['z'] for v in row if v is not None]
-            if vals:
-                lith_median_z.setdefault(m['lith'], []).extend(vals)
-        lith_order = sorted(lith_median_z.keys(),
-                            key=lambda l: sorted(lith_median_z[l])[len(lith_median_z[l])//2])
 
-        # 水平分离间距：基于 X 范围，保证展开后不重叠
-        x_range = all_n.max() - all_n.min()
-        sep_per_lith = max(x_range * 0.35, 30.0)
+        # 岩性排序（分层观察和岩性开关共用）
+        if has_explode:
+            lith_median_z = {}
+            for m in body_meta:
+                if m['type'] == 'mesh':
+                    vals = [v for v in m['z'] if v is not None]
+                else:
+                    vals = [v for row in m['z'] for v in row if v is not None]
+                if vals:
+                    lith_median_z.setdefault(m['lith'], []).extend(vals)
+            lith_order = sorted(lith_median_z.keys(),
+                                key=lambda l: sorted(lith_median_z[l])[len(lith_median_z[l])//2])
+            x_range = all_n.max() - all_n.min()
+            sep_per_lith = max(x_range * 0.35, 30.0)
 
-        with open(html_path, 'r') as fh:
-            html = fh.read()
+        # ---- 构建面板各区块 ----
 
-        explosion_js = f"""
-<style>
-#layer-explode-panel{{position:absolute;bottom:16px;left:50%;transform:translateX(-50%);background:rgba(28,28,28,0.9);color:#e0e0e0;padding:8px 20px;border-radius:8px;z-index:9999;font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;font-size:13px;display:flex;gap:14px;align-items:center;box-shadow:0 2px 14px rgba(0,0,0,0.35)}}
+        # 分层观察滑块行 HTML
+        explode_row_html = ''
+        if has_explode:
+            explode_row_html = (
+                '<div class="panel-control-row">'
+                '<span title="拖拽滑块将各地层左右展开为独立切片观察">📐 分层观察</span>'
+                '<input type="range" id="layer-explode-slider" min="0" max="100" value="0" step="1">'
+                '<span id="layer-explode-label">0%</span>'
+                '<button id="layer-explode-reset">重置</button>'
+                '<button id="vol-btn-activate" class="vol-btn-inline" title="点击激活体积估算工具">📐 体积估算</button>'
+                '</div>'
+            )
+
+        # 岩性复选框 HTML
+        lith_checkboxes_html = ''
+        if has_explode:
+            for lith in lith_order:
+                c = bodies[lith]['color']
+                color_css = f'rgb({int(c[0]*255)},{int(c[1]*255)},{int(c[2]*255)})'
+                lith_checkboxes_html += (
+                    f'<label class="lith-cb-row">'
+                    f'<input type="checkbox" class="lith-toggle-cb" value="{lith}" checked>'
+                    f'<span class="lith-color-dot" style="background:{color_css}"></span>'
+                    f'{lith}</label>'
+                )
+
+        # 钻孔开关 HTML
+        drill_switch_html = ''
+        if has_drills:
+            lith_has = 'class="panel-sep"' if has_explode else ''
+            drill_switch_html = (
+                f'<span {lith_has}></span>'
+                '<span style="white-space:nowrap">🔬 钻孔</span>'
+                '<label class="drill-switch">'
+                '<input type="checkbox" id="drill-toggle" checked>'
+                '<span class="drill-slider"></span>'
+                '</label>'
+            )
+
+        # 显隐开关行 HTML（仅在需要时显示）
+        toggle_row_html = ''
+        if has_explode or has_drills:
+            toggle_row_html = (
+                '<div class="panel-control-row panel-toggle-row">'
+                f'{lith_checkboxes_html}'
+                f'{drill_switch_html}'
+                '</div>'
+            )
+
+        # ---- 注入 JS（分层观察 + 岩性开关 + 钻孔开关） ----
+        panel_js = f"""<style>
+#layer-explode-panel{{position:absolute;bottom:16px;left:50%;transform:translateX(-50%);background:rgba(28,28,28,0.9);color:#e0e0e0;padding:6px 20px 8px;border-radius:8px;z-index:9999;font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;font-size:13px;display:flex;flex-direction:column;gap:5px;box-shadow:0 2px 14px rgba(0,0,0,0.35)}}
+.panel-control-row{{display:flex;gap:14px;align-items:center}}
+.panel-toggle-row{{font-size:12px;gap:6px;flex-wrap:wrap;padding-top:2px;border-top:1px solid rgba(255,255,255,0.08)}}
+.panel-sep{{width:1px;height:18px;background:rgba(255,255,255,0.15);margin:0 4px;flex-shrink:0}}
+.lith-cb-row{{display:flex;gap:4px;align-items:center;cursor:pointer;padding:3px 8px;border-radius:4px;background:rgba(255,255,255,0.06);transition:background .15s;white-space:nowrap;user-select:none}}
+.lith-cb-row:hover{{background:rgba(255,255,255,0.14)}}
+.lith-cb-row input[type=checkbox]{{accent-color:#4fc3f7;margin:0;cursor:pointer}}
+.lith-color-dot{{display:inline-block;width:10px;height:10px;border-radius:2px;flex-shrink:0}}
+.drill-switch{{position:relative;display:inline-block;width:36px;height:20px;flex-shrink:0}}
+.drill-switch input{{opacity:0;width:0;height:0}}
+.drill-slider{{position:absolute;cursor:pointer;top:0;left:0;right:0;bottom:0;background-color:#555;transition:.3s;border-radius:20px}}
+.drill-slider:before{{position:absolute;content:"";height:14px;width:14px;left:3px;bottom:3px;background-color:white;transition:.3s;border-radius:50%}}
+input:checked+.drill-slider{{background-color:#4fc3f7}}
+input:checked+.drill-slider:before{{transform:translateX(16px)}}
 #layer-explode-slider{{width:240px;accent-color:#4fc3f7;cursor:pointer}}
 #layer-explode-label{{min-width:44px;text-align:center;font-weight:600;color:#4fc3f7}}
 #layer-explode-reset{{background:rgba(255,255,255,0.12);color:#ccc;border:1px solid rgba(255,255,255,0.2);border-radius:4px;padding:4px 12px;cursor:pointer;font-size:12px;transition:background .15s}}
 #layer-explode-reset:hover{{background:rgba(255,255,255,0.22)}}
 </style>
 <div id="layer-explode-panel">
-  <span title="拖拽滑块将各地层左右展开为独立切片观察">📐 分层观察</span>
-  <input type="range" id="layer-explode-slider" min="0" max="100" value="0" step="1">
-  <span id="layer-explode-label">0%</span>
-  <button id="layer-explode-reset">重置</button>
+  {explode_row_html}
+  {toggle_row_html}
 </div>
 <script>
 (function(){{
+var gdP=document.getElementById('layer-explode-model');
+if(!gdP)gdP=document.querySelector('.js-plotly-plot');
+if(!gdP)return;
+"""
+        # 分层观察 JS
+        if has_explode:
+            panel_js += f"""
 var BODY={json.dumps(body_meta, separators=(',', ':'))};
 var LITH_ORDER={json.dumps(lith_order)};
 var SEP={sep_per_lith:.2f};
 var N_LITH=LITH_ORDER.length;
-var gd=document.getElementById('layer-explode-model');
-if(!gd)gd=document.querySelector('.js-plotly-plot');
-if(!gd)return;
-
-// 使用 requestAnimationFrame 批处理，避免滑块快速拖拽时多次重绘
-var _rafId=null, _pendingFactor=null;
-
+var _rafId=null,_pendingFactor=null;
 function applySpread(factor){{
  _pendingFactor=factor;
  if(_rafId!==null)return;
  _rafId=requestAnimationFrame(function(){{
-  var f=_pendingFactor; _pendingFactor=null; _rafId=null;
+  var f=_pendingFactor;_pendingFactor=null;_rafId=null;
   var xList=[],xIx=[],zList=[],zIx=[];
   var center=(N_LITH-1)/2;
   for(var i=0;i<BODY.length;i++){{
@@ -1355,21 +1491,559 @@ function applySpread(factor){{
    }}
    xIx.push(m.trace);zIx.push(m.trace);
   }}
-  // 单次 restyle 同时更新 x 和 z，减少重绘次数
-  Plotly.restyle(gd,{{x:xList,z:zList}},xIx);
+  Plotly.restyle(gdP,{{x:xList,z:zList}},xIx);
  }});
 }}
-
 var sl=document.getElementById('layer-explode-slider');
 var lb=document.getElementById('layer-explode-label');
 sl.addEventListener('input',function(){{var f=parseInt(this.value)/100;lb.textContent=Math.round(f*100)+'%';applySpread(f)}});
 document.getElementById('layer-explode-reset').addEventListener('click',function(){{sl.value=0;lb.textContent='0%';applySpread(0)}});
+"""
+        # 岩性开关 JS
+        if has_explode:
+            panel_js += f"""
+var LITH_TRACES={json.dumps(lith_trace_map)};
+document.querySelectorAll('.lith-toggle-cb').forEach(function(cb){{
+ cb.addEventListener('change',function(){{
+  var traces=LITH_TRACES[this.value];
+  if(traces&&traces.length) Plotly.restyle(gdP,'visible',this.checked,traces);
+ }});
+}});
+"""
+        # 钻孔开关 JS
+        if has_drills:
+            panel_js += f"""
+var DRILL={json.dumps(drill_trace_indices)};
+document.getElementById('drill-toggle').addEventListener('change',function(){{
+ Plotly.restyle(gdP,'visible',this.checked,DRILL);
+}});
+"""
+        panel_js += """
+})();
+</script>
+"""
+        injection_parts.append(panel_js)
+
+    # ---- 体积估算面板 ----
+    grid_data_tag = _serialize_grid_data(bodies)
+    # 计算 Z 范围供滑块使用
+    z_all = []
+    for body in bodies.values():
+        zt = body['Z_top'][~np.isnan(body['Z_top'])]
+        zb = body['Z_bot'][~np.isnan(body['Z_bot'])]
+        if len(zt) > 0:
+            z_all.extend(zt.tolist())
+        if len(zb) > 0:
+            z_all.extend(zb.tolist())
+    z_range_min = float(np.min(z_all)) if z_all else 0
+    z_range_max = float(np.max(z_all)) if z_all else 100
+    # 加 5% 余量
+    z_pad = (z_range_max - z_range_min) * 0.05 if z_range_max > z_range_min else 10
+    z_range_min -= z_pad
+    z_range_max += z_pad
+
+    volume_panel_js = f'''
+<style>
+#volume-estimate-panel{{
+    position:absolute;bottom:60px;right:16px;background:rgba(28,28,28,0.9);color:#e0e0e0;
+    border-radius:8px;z-index:9998;font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;
+    font-size:13px;box-shadow:0 2px 14px rgba(0,0,0,0.35);width:300px;overflow:hidden;display:none;
+    user-select:none;-webkit-user-select:none;
+}}
+#volume-estimate-panel.visible{{display:block;}}
+.vol-panel-header{{
+    padding:8px 14px;display:flex;justify-content:space-between;align-items:center;
+    border-bottom:1px solid rgba(255,255,255,0.1);cursor:pointer;
+}}
+.vol-panel-header span{{font-weight:600;color:#4fc3f7;}}
+.vol-panel-header button{{
+    background:none;border:none;color:#999;font-size:18px;cursor:pointer;padding:0 4px;line-height:1;
+}}
+.vol-panel-header button:hover{{color:#fff;}}
+.vol-panel-body{{padding:10px 14px 12px;display:block;}}
+.vol-panel-body.collapsed{{display:none;}}
+.vol-slider-group{{margin-bottom:8px;position:relative;}}
+.vol-slider-group input[type=range].vol-single-range{{
+    position:static;top:auto;left:auto;width:100%;height:auto;margin:0;padding:0;
+    -webkit-appearance:auto;appearance:auto;background:auto;pointer-events:auto;
+    transform:none;accent-color:#4fc3f7;
+}}
+.vol-slider-group .vol-label{{
+    display:flex;justify-content:space-between;align-items:center;margin-bottom:2px;font-size:12px;
+}}
+.vol-slider-group .vol-label span:last-child{{color:#4fc3f7;font-weight:600;min-width:70px;text-align:right;}}
+.vol-slider-group .vol-slider-track{{
+    position:relative;height:22px;display:flex;align-items:center;
+}}
+.vol-slider-group input[type=range]{{
+    position:absolute;top:0;left:0;width:100%;height:100%;margin:0;padding:0;
+    -webkit-appearance:none;appearance:none;background:transparent;pointer-events:none;
+}}
+.vol-slider-group input[type=range]::-webkit-slider-runnable-track{{
+    height:4px;background:rgba(255,255,255,0.15);border-radius:2px;border:none;
+}}
+.vol-slider-group input[type=range]::-webkit-slider-thumb{{
+    -webkit-appearance:none;appearance:none;pointer-events:auto;
+    width:12px;height:12px;border-radius:50%;background:#4fc3f7;
+    border:2px solid #fff;cursor:pointer;margin-top:-4px;box-shadow:0 0 4px rgba(79,195,247,0.5);
+}}
+.vol-slider-group input[type=range]::-moz-range-track{{
+    height:4px;background:rgba(255,255,255,0.15);border-radius:2px;border:none;
+}}
+.vol-slider-group input[type=range]::-moz-range-thumb{{
+    pointer-events:auto;width:12px;height:12px;border-radius:50%;background:#4fc3f7;
+    border:2px solid #fff;cursor:pointer;box-shadow:0 0 4px rgba(79,195,247,0.5);
+}}
+.vol-lith-checkboxes{{margin-bottom:10px;display:flex;flex-wrap:wrap;gap:6px;font-size:12px;}}
+.vol-lith-checkboxes label{{cursor:pointer;display:flex;align-items:center;gap:3px;padding:3px 8px;border-radius:4px;background:rgba(255,255,255,0.06);transition:background .15s;}}
+.vol-lith-checkboxes label:hover{{background:rgba(255,255,255,0.14);}}
+.vol-lith-checkboxes input[type=checkbox]{{accent-color:#4fc3f7;margin:0;}}
+.vol-result{{padding:10px 12px;background:rgba(79,195,247,0.08);border-radius:6px;text-align:center;}}
+.vol-result .vol-total{{font-size:22px;font-weight:700;color:#4fc3f7;margin-bottom:2px;}}
+.vol-result .vol-detail{{font-size:11px;color:#aaa;line-height:1.5;}}
+.vol-result .vol-per-lith{{font-size:11px;color:#aaa;margin-top:4px;text-align:left;padding-left:12px;}}
+.vol-actions{{display:flex;gap:8px;margin-top:10px;justify-content:flex-end;}}
+.vol-btn{{
+    padding:5px 14px;border-radius:4px;border:1px solid rgba(255,255,255,0.2);cursor:pointer;
+    font-size:12px;font-family:inherit;transition:background .15s;
+}}
+.vol-btn-confirm{{background:rgba(79,195,247,0.18);color:#4fc3f7;border-color:rgba(79,195,247,0.35);}}
+.vol-btn-confirm:hover{{background:rgba(79,195,247,0.3);}}
+.vol-btn-cancel{{background:rgba(255,255,255,0.08);color:#ccc;}}
+.vol-btn-cancel:hover{{background:rgba(255,255,255,0.16);}}
+.vol-btn-inline{{
+    padding:4px 12px;border-radius:4px;border:1px solid rgba(79,195,247,0.4);cursor:pointer;
+    background:rgba(255,255,255,0.08);color:#4fc3f7;font-size:12px;
+    font-family:inherit;transition:background .15s;
+}}
+.vol-btn-inline:hover{{background:rgba(79,195,247,0.15);}}
+.vol-btn-inline.active{{background:rgba(211,47,47,0.18);color:#ef9a9a;border-color:rgba(211,47,47,0.4);}}
+</style>
+
+{grid_data_tag}
+
+<div id="volume-estimate-panel">
+  <div class="vol-panel-header" id="vol-panel-header-btn">
+    <span>📐 体积估算</span>
+    <button id="vol-panel-toggle" title="收起/展开">−</button>
+  </div>
+  <div class="vol-panel-body" id="vol-panel-body">
+    <div class="vol-slider-group">
+      <div class="vol-label"><span>X (北) 范围</span><span id="vol-x-label">—</span></div>
+      <div class="vol-slider-track">
+        <input type="range" id="vol-x-min" min="0" max="100" step="0.1" value="0">
+        <input type="range" id="vol-x-max" min="0" max="100" step="0.1" value="100">
+      </div>
+    </div>
+    <div class="vol-slider-group">
+      <div class="vol-label"><span>Y (东) 范围</span><span id="vol-y-label">—</span></div>
+      <div class="vol-slider-track">
+        <input type="range" id="vol-y-min" min="0" max="100" step="0.1" value="0">
+        <input type="range" id="vol-y-max" min="0" max="100" step="0.1" value="100">
+      </div>
+    </div>
+    <div class="vol-slider-group">
+      <div class="vol-label"><span>Z (高程) 范围</span><span id="vol-z-label">—</span></div>
+      <div class="vol-slider-track">
+        <input type="range" id="vol-z-min" min="0" max="100" step="0.1" value="0">
+        <input type="range" id="vol-z-max" min="0" max="100" step="0.1" value="100">
+      </div>
+    </div>
+    <div class="vol-slider-group">
+      <div class="vol-label"><span>🔄 框体旋转角度</span><span id="vol-rot-label">0°</span></div>
+      <div class="vol-slider-track">
+        <input type="range" id="vol-rot-angle" min="-90" max="90" value="0" step="1">
+      </div>
+    </div>
+    <div class="vol-lith-checkboxes" id="vol-lith-checks"></div>
+    <div class="vol-result" id="vol-result">
+      <div class="vol-total">— m³</div>
+      <div class="vol-detail">拖拽 X / Y / Z 滑块框选范围，查看体积估算结果</div>
+    </div>
+    <div class="vol-actions">
+      <button class="vol-btn vol-btn-cancel" id="vol-btn-cancel">✕ 关闭</button>
+      <button class="vol-btn vol-btn-confirm" id="vol-btn-confirm">✓ 确定</button>
+    </div>
+  </div>
+</div>
+
+<script>
+(function(){{
+  "use strict";
+
+  // ===== 常量 & DOM 引用 =====
+  var gd = document.getElementById('layer-explode-model');
+  if (!gd) gd = document.querySelector('.js-plotly-plot');
+  if (!gd) return;
+
+  var gridScript = document.getElementById('geobody-grid-data');
+  if (!gridScript) return;
+  var gridData = JSON.parse(gridScript.textContent);
+
+  var dg = gridData;
+  var xDataMin = dg.x_range[0], xDataMax = dg.x_range[1];
+  var yDataMin = dg.y_range[0], yDataMax = dg.y_range[1];
+  var zDataMin = {z_range_min:.2f}, zDataMax = {z_range_max:.2f};
+
+  // ===== 状态 =====
+  var active = false;
+  var currentBounds = null;
+  var activeLiths = gridData.liths.slice();
+  var selectTraces = [];
+  var panelCollapsed = false;
+
+  // DOM refs
+  var panel = document.getElementById('volume-estimate-panel');
+  var btnActivate = document.getElementById('vol-btn-activate');
+  if (!btnActivate) return;
+  var panelBody = document.getElementById('vol-panel-body');
+  var panelToggleBtn = document.getElementById('vol-panel-toggle');
+  var panelHeaderBtn = document.getElementById('vol-panel-header-btn');
+  var btnCancel = document.getElementById('vol-btn-cancel');
+  var btnConfirm = document.getElementById('vol-btn-confirm');
+  var resultDiv = document.getElementById('vol-result');
+  var lithChecks = document.getElementById('vol-lith-checks');
+  var rotAngle = document.getElementById('vol-rot-angle');
+  var rotLabel = document.getElementById('vol-rot-label');
+
+  var slXMin = document.getElementById('vol-x-min');
+  var slXMax = document.getElementById('vol-x-max');
+  var slYMin = document.getElementById('vol-y-min');
+  var slYMax = document.getElementById('vol-y-max');
+  var slZMin = document.getElementById('vol-z-min');
+  var slZMax = document.getElementById('vol-z-max');
+  var labelX = document.getElementById('vol-x-label');
+  var labelY = document.getElementById('vol-y-label');
+  var labelZ = document.getElementById('vol-z-label');
+
+  // ===== 初始化岩性复选框 =====
+  function buildLithCheckboxes() {{
+    if (dg.liths.length <= 1) {{
+      lithChecks.style.display = 'none';
+      return;
+    }}
+    var html = '';
+    dg.liths.forEach(function(lith) {{
+      var c = dg.colors[lith] || '#aaa';
+      html += '<label><input type="checkbox" class="vol-lith-cb" value="' + lith + '" checked>'
+        + '<span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:' + c + ';"></span> '
+        + lith + '</label>';
+    }});
+    lithChecks.innerHTML = html;
+
+    // 绑定复选框事件
+    lithChecks.querySelectorAll('.vol-lith-cb').forEach(function(cb) {{
+      cb.addEventListener('change', function() {{
+        activeLiths = [];
+        lithChecks.querySelectorAll('.vol-lith-cb:checked').forEach(function(c) {{
+          activeLiths.push(c.value);
+        }});
+        if (active) updateAll();
+      }});
+    }});
+  }}
+  buildLithCheckboxes();
+
+  // ===== 滑块设置 =====
+  var SLIDER_STEPS = 1000;
+
+  function sliderToReal(sl, dataMin, dataMax) {{
+    return dataMin + (parseFloat(sl.value) / SLIDER_STEPS) * (dataMax - dataMin);
+  }}
+
+  function realToSlider(val, dataMin, dataMax) {{
+    return Math.round(((val - dataMin) / (dataMax - dataMin)) * SLIDER_STEPS);
+  }}
+
+  function initSliders() {{
+    slXMin.max = SLIDER_STEPS; slXMin.value = 0;
+    slXMax.max = SLIDER_STEPS; slXMax.value = SLIDER_STEPS;
+    slYMin.max = SLIDER_STEPS; slYMin.value = 0;
+    slYMax.max = SLIDER_STEPS; slYMax.value = SLIDER_STEPS;
+    slZMin.max = SLIDER_STEPS; slZMin.value = 0;
+    slZMax.max = SLIDER_STEPS; slZMax.value = SLIDER_STEPS;
+  }}
+
+  function getBoundsFromSliders() {{
+    return {{
+      xMin: sliderToReal(slXMin, xDataMin, xDataMax),
+      xMax: sliderToReal(slXMax, xDataMin, xDataMax),
+      yMin: sliderToReal(slYMin, yDataMin, yDataMax),
+      yMax: sliderToReal(slYMax, yDataMin, yDataMax),
+      zMin: sliderToReal(slZMin, zDataMin, zDataMax),
+      zMax: sliderToReal(slZMax, zDataMin, zDataMax)
+    }};
+  }}
+
+  function setSlidersFromBounds(b) {{
+    slXMin.value = realToSlider(b.xMin, xDataMin, xDataMax);
+    slXMax.value = realToSlider(b.xMax, xDataMin, xDataMax);
+    slYMin.value = realToSlider(b.yMin, yDataMin, yDataMax);
+    slYMax.value = realToSlider(b.yMax, yDataMin, yDataMax);
+    slZMin.value = realToSlider(b.zMin, zDataMin, zDataMax);
+    slZMax.value = realToSlider(b.zMax, zDataMin, zDataMax);
+  }}
+
+  // ===== 体积计算 =====
+  function formatVolume(v) {{
+    if (!v || isNaN(v) || !isFinite(v)) return '0 m³';
+    if (v >= 1e9) return (v / 1e9).toFixed(2) + ' km³';
+    if (v >= 1e6) return (v / 1e6).toFixed(2) + ' 百万 m³';
+    if (v >= 1e4) return Math.round(v).toLocaleString() + ' m³';
+    return v.toFixed(1) + ' m³';
+  }}
+
+  function computeVolume(bounds) {{
+    var totalVolume = 0, validCells = 0, totalCells = 0, byLith = {{}};
+    var bXMin = Math.min(bounds.xMin, bounds.xMax), bXMax = Math.max(bounds.xMin, bounds.xMax);
+    var bYMin = Math.min(bounds.yMin, bounds.yMax), bYMax = Math.max(bounds.yMin, bounds.yMax);
+    var bZMin = Math.min(bounds.zMin, bounds.zMax), bZMax = Math.max(bounds.zMin, bounds.zMax);
+    // 旋转：将网格点变换到框体局部坐标系
+    var angle = parseFloat(rotAngle.value) || 0, useRot = angle !== 0;
+    var cx = (bXMin + bXMax) / 2, cy = (bYMin + bYMax) / 2;
+    var cosA = 1, sinA = 0;
+    if (useRot) {{ var rad = -angle * Math.PI / 180; cosA = Math.cos(rad); sinA = Math.sin(rad); }}
+
+    activeLiths.forEach(function(lith) {{
+      var zd = dg.z_data[lith];
+      if (!zd || !zd.z_top || !zd.z_bot) return;
+      var lithVol = 0, lithValid = 0;
+
+      for (var i = 0; i < dg.ny; i++) {{
+        var y = dg.y_range[0] + i * dg.dy;
+        for (var j = 0; j < dg.nx; j++) {{
+          var x = dg.x_range[0] + j * dg.dx;
+          // 旋转网格点到框体局部坐标系
+          if (useRot) {{
+            var dx = x - cx, dy = y - cy;
+            var rx = cx + dx * cosA - dy * sinA;
+            var ry = cy + dx * sinA + dy * cosA;
+            if (rx < bXMin || rx > bXMax || ry < bYMin || ry > bYMax) continue;
+          }} else {{
+            if (x < bXMin || x > bXMax || y < bYMin || y > bYMax) continue;
+          }}
+
+          var zt = zd.z_top[i][j];
+          var zb = zd.z_bot[i][j];
+          if (zt === null || zb === null) continue;
+          totalCells++;
+
+          var topClip = Math.min(zt, bZMax), botClip = Math.max(zb, bZMin);
+          if (topClip <= botClip) continue;
+          lithVol += dg.dx * dg.dy * (topClip - botClip);
+          lithValid++;
+        }}
+      }}
+
+      byLith[lith] = lithVol;
+      totalVolume += lithVol;
+      validCells += lithValid;
+    }});
+
+    return {{
+      total: totalVolume,
+      byLith: byLith,
+      validCells: validCells,
+      totalCells: totalCells,
+      cellArea: dg.dx * dg.dy
+    }};
+  }}
+
+  // ===== 选择框渲染（支持旋转） =====
+  function rotateCorners(corners, angleDeg) {{
+    if (!angleDeg) return corners;
+    var rad = angleDeg * Math.PI / 180, cosA = Math.cos(rad), sinA = Math.sin(rad);
+    var cx = 0, cy = 0, n = corners.length;
+    for (var i = 0; i < n; i++) {{ cx += corners[i][0]; cy += corners[i][1]; }}
+    cx /= n; cy /= n;
+    return corners.map(function(v) {{
+      var dx = v[0] - cx, dy = v[1] - cy;
+      return [cx + dx * cosA - dy * sinA, cy + dx * sinA + dy * cosA, v[2]];
+    }});
+  }}
+
+  function buildBoxTraces(bounds) {{
+    var bXMin = Math.min(bounds.xMin, bounds.xMax), bXMax = Math.max(bounds.xMin, bounds.xMax);
+    var bYMin = Math.min(bounds.yMin, bounds.yMax), bYMax = Math.max(bounds.yMin, bounds.yMax);
+    var bZMin = Math.min(bounds.zMin, bounds.zMax), bZMax = Math.max(bounds.zMin, bounds.zMax);
+    var angle = parseFloat(rotAngle.value) || 0;
+    var c = rotateCorners([[bXMin,bYMin,bZMin],[bXMax,bYMin,bZMin],[bXMax,bYMax,bZMin],[bXMin,bYMax,bZMin],
+                           [bXMin,bYMin,bZMax],[bXMax,bYMin,bZMax],[bXMax,bYMax,bZMax],[bXMin,bYMax,bZMax]], angle);
+    var meshI = [0,0, 4,4, 0,0, 2,2, 0,0, 1,1];
+    var meshJ = [1,2, 5,6, 1,5, 3,7, 3,7, 2,6];
+    var meshK = [2,3, 6,7, 5,4, 7,6, 7,4, 6,5];
+    var faceColor = 'rgba(0,229,255,0.10)', edgeColor = 'rgba(0,229,255,0.75)';
+    var edges = [[0,1],[1,2],[2,3],[3,0],[4,5],[5,6],[6,7],[7,4],[0,4],[1,5],[2,6],[3,7]];
+    var ex = [], ey = [], ez = [];
+    edges.forEach(function(e) {{ ex.push(null, c[e[0]][0], c[e[1]][0]); ey.push(null, c[e[0]][1], c[e[1]][1]); ez.push(null, c[e[0]][2], c[e[1]][2]); }});
+    return [
+      {{ type: 'mesh3d', x: [c[0][0],c[1][0],c[2][0],c[3][0], c[4][0],c[5][0],c[6][0],c[7][0]],
+          y: [c[0][1],c[1][1],c[2][1],c[3][1], c[4][1],c[5][1],c[6][1],c[7][1]],
+          z: [c[0][2],c[1][2],c[2][2],c[3][2], c[4][2],c[5][2],c[6][2],c[7][2]],
+          i: meshI, j: meshJ, k: meshK, color: faceColor, flatshading: true,
+          showlegend: false, hoverinfo: 'skip' }},
+      {{ type: 'scatter3d', mode: 'lines', x: ex, y: ey, z: ez,
+          line: {{color: edgeColor, width: 3}}, showlegend: false, hoverinfo: 'skip' }}
+    ];
+  }}
+
+  function removeSelectionBox() {{
+    if (selectTraces.length > 0) {{ Plotly.deleteTraces(gd, selectTraces); selectTraces = []; }}
+  }}
+
+  function renderSelectionBox(bounds) {{
+    if (!bounds) {{ removeSelectionBox(); return; }}
+    var newTraces = buildBoxTraces(bounds);
+    if (selectTraces.length >= 2) {{
+      // 更新已有 trace 数据（比删除+重建快得多）
+      Plotly.restyle(gd, {{
+        x: [newTraces[0].x], y: [newTraces[0].y], z: [newTraces[0].z],
+        i: [newTraces[0].i], j: [newTraces[0].j], k: [newTraces[0].k]
+      }}, selectTraces[0]);
+      Plotly.restyle(gd, {{
+        x: [newTraces[1].x], y: [newTraces[1].y], z: [newTraces[1].z]
+      }}, selectTraces[1]);
+    }} else {{
+      // 首次渲染：创建 trace
+      removeSelectionBox();
+      var base = gd.data.length;
+      Plotly.addTraces(gd, newTraces);
+      for (var i = 0; i < newTraces.length; i++) selectTraces.push(base + i);
+    }}
+  }}
+
+  // ===== 更新显示 =====
+  function updateLabels(bounds) {{
+    labelX.textContent = bounds.xMin.toFixed(0) + ' ~ ' + bounds.xMax.toFixed(0) + ' m';
+    labelY.textContent = bounds.yMin.toFixed(0) + ' ~ ' + bounds.yMax.toFixed(0) + ' m';
+    labelZ.textContent = bounds.zMin.toFixed(0) + ' ~ ' + bounds.zMax.toFixed(0) + ' m';
+  }}
+
+  function updateAll() {{
+    var bounds = getBoundsFromSliders();
+    currentBounds = bounds;
+    updateLabels(bounds);
+    var result = computeVolume(bounds);
+    var html = '<div class="vol-total">' + formatVolume(result.total) + '</div>';
+    html += '<div class="vol-detail">有效网格: ' + result.validCells.toLocaleString() + ' / ' + result.totalCells.toLocaleString()
+      + ' (' + (result.totalCells > 0 ? (result.validCells / result.totalCells * 100).toFixed(1) : 0) + '%)'
+      + ' | 网格: ' + result.cellArea.toFixed(1) + ' m²</div>';
+    if (dg.liths.length > 1) {{
+      html += '<div class="vol-per-lith">';
+      dg.liths.forEach(function(lith) {{
+        if (activeLiths.indexOf(lith) < 0) return;
+        html += lith + ': ' + formatVolume(result.byLith[lith] || 0) + '<br>';
+      }});
+      html += '</div>';
+    }}
+    resultDiv.innerHTML = html;
+    renderSelectionBox(bounds);
+  }}
+
+  // ===== 面板开/关 =====
+  function openPanel() {{
+    active = true;
+    panel.classList.add('visible');
+    btnActivate.classList.add('active');
+    btnActivate.textContent = '📐 关闭估算';
+    currentBounds = {{ xMin: xDataMin, xMax: xDataMax, yMin: yDataMin, yMax: yDataMax, zMin: zDataMin, zMax: zDataMax }};
+    setSlidersFromBounds(currentBounds);
+    rotAngle.value = 0; rotLabel.textContent = '0°';
+    updateAll();
+  }}
+
+  function closePanel() {{
+    active = false;
+    currentBounds = null;
+    removeSelectionBox();
+    rotAngle.value = 0; rotLabel.textContent = '0°';
+    panel.classList.remove('visible');
+    btnActivate.classList.remove('active');
+    btnActivate.textContent = '📐 体积估算';
+  }}
+
+  btnActivate.addEventListener('click', function() {{ active ? closePanel() : openPanel(); }});
+  btnCancel.addEventListener('click', closePanel);
+  btnConfirm.addEventListener('click', function() {{
+    if (!currentBounds) return;
+    var result = computeVolume(currentBounds);
+    resultDiv.innerHTML = '<div class="vol-total">' + formatVolume(result.total) + '</div><div class="vol-detail">✅ 已确认</div>';
+  }});
+
+  // ===== 滑块输入（面板打开时始终响应） =====
+  var _sliderRAF = null;
+  function onSliderRAF() {{
+    if (_sliderRAF !== null) return;
+    _sliderRAF = requestAnimationFrame(function() {{ _sliderRAF = null; if (active) updateAll(); }});
+  }}
+
+  slXMin.addEventListener('input', function() {{
+    if (parseFloat(this.value) >= parseFloat(slXMax.value)) slXMax.value = Math.min(SLIDER_STEPS, parseFloat(this.value) + 1);
+    onSliderRAF();
+  }});
+  slXMax.addEventListener('input', function() {{
+    if (parseFloat(this.value) <= parseFloat(slXMin.value)) slXMin.value = Math.max(0, parseFloat(this.value) - 1);
+    onSliderRAF();
+  }});
+  slYMin.addEventListener('input', function() {{
+    if (parseFloat(this.value) >= parseFloat(slYMax.value)) slYMax.value = Math.min(SLIDER_STEPS, parseFloat(this.value) + 1);
+    onSliderRAF();
+  }});
+  slYMax.addEventListener('input', function() {{
+    if (parseFloat(this.value) <= parseFloat(slYMin.value)) slYMin.value = Math.max(0, parseFloat(this.value) - 1);
+    onSliderRAF();
+  }});
+  slZMin.addEventListener('input', function() {{
+    if (parseFloat(this.value) >= parseFloat(slZMax.value)) slZMax.value = Math.min(SLIDER_STEPS, parseFloat(this.value) + 1);
+    onSliderRAF();
+  }});
+  slZMax.addEventListener('input', function() {{
+    if (parseFloat(this.value) <= parseFloat(slZMin.value)) slZMin.value = Math.max(0, parseFloat(this.value) - 1);
+    onSliderRAF();
+  }});
+
+  // 旋转角度
+  rotAngle.addEventListener('input', function() {{
+    rotLabel.textContent = this.value + '°';
+    onSliderRAF();
+  }});
+
+  // ===== 面板折叠 =====
+  panelToggleBtn.addEventListener('click', function(e) {{
+    e.stopPropagation();
+    panelCollapsed = !panelCollapsed;
+    if (panelCollapsed) {{
+      panelBody.style.display = 'none';
+      panelToggleBtn.textContent = '+';
+    }} else {{
+      panelBody.style.display = 'block';
+      panelToggleBtn.textContent = '−';
+    }}
+  }});
+  panelHeaderBtn.addEventListener('click', function() {{
+    panelCollapsed = !panelCollapsed;
+    if (panelCollapsed) {{
+      panelBody.style.display = 'none';
+      panelToggleBtn.textContent = '+';
+    }} else {{
+      panelBody.style.display = 'block';
+      panelToggleBtn.textContent = '−';
+    }}
+  }});
+
+  // ===== 初始状态 =====
+  initSliders();
+
+  console.log('[体积估算] 已加载，网格: ' + dg.nx + '×' + dg.ny + ', 岩性数: ' + dg.liths.length);
+
 }})();
 </script>
-"""  # f-string double-braces for literal { in JS
+'''
+    injection_parts.append(volume_panel_js)
 
-        # 注入到 </body> 之前
-        html = html.replace('</body>', explosion_js + '\n</body>')
+    # 注入到 </body> 之前
+    if injection_parts:
+        html = html.replace('</body>', '\n'.join(injection_parts) + '\n</body>')
         with open(html_path, 'w') as fh:
             fh.write(html)
 
@@ -3535,7 +4209,8 @@ def _compute_composite_scores(all_results):
     """
     对所有参数组合计算综合评分（归一化加权法）。
 
-    对 RMSE、MAE、max_error 做 min-max 归一化后加权求和，
+    对 RMSE、MAE、max_error 做 min-max 归一化后加权求和（值越小越差），
+    再做 1−score 反转使得得分越高模型越好（1=最优，0=最差）。
     max_error 先做温和截尾（winsorize）防止极端值扭曲归一化。
 
     返回:
@@ -3576,15 +4251,16 @@ def _compute_composite_scores(all_results):
 
     for i, e in enumerate(all_results):
         if e.get('rmse') is None:
-            e['composite_score'] = float('inf')
+            e['composite_score'] = float('-inf')
             continue
         r_idx = np.where(rmse_vals == e['rmse'])[0][0]
         m_idx = np.where(mae_vals == e['mae'])[0][0]
         x_idx = np.where(max_vals == e['max_error'])[0][0]
-        score = (SCORE_WEIGHT_RMSE * norm_rmse[r_idx]
-               + SCORE_WEIGHT_MAE * norm_mae[m_idx]
-               + SCORE_WEIGHT_MAX_ERROR * norm_max[x_idx])
-        e['composite_score'] = round(float(score), 6)
+        raw = (SCORE_WEIGHT_RMSE * norm_rmse[r_idx]
+             + SCORE_WEIGHT_MAE * norm_mae[m_idx]
+             + SCORE_WEIGHT_MAX_ERROR * norm_max[x_idx])
+        # 反转：得分越高模型越好（1=最优，0=最差）
+        e['composite_score'] = round(float(1.0 - raw), 6)
 
 
 def evaluate_rbf_loocv(x, y, z, rbf_function='multiquadric', smooth=0.01, epsilon=None):
@@ -3748,7 +4424,7 @@ def optimize_rbf_params(
 
     # 综合评分（归一化加权：RMSE + MAE + max_error）
     _compute_composite_scores(all_results)
-    all_results.sort(key=lambda e: e.get('composite_score', float('inf')))
+    all_results.sort(key=lambda e: e.get('composite_score', float('-inf')), reverse=True)
     best = all_results[0].copy()
 
     return {
@@ -3964,7 +4640,7 @@ def optimize_kriging_params(
 
     # 综合评分（归一化加权：RMSE + MAE + max_error）
     _compute_composite_scores(all_results)
-    all_results.sort(key=lambda e: e.get('composite_score', float('inf')))
+    all_results.sort(key=lambda e: e.get('composite_score', float('-inf')), reverse=True)
     best = all_results[0].copy()
 
     return {

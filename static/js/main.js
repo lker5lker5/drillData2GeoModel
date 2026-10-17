@@ -2761,7 +2761,7 @@ function renderRBFAnalysisResults(data) {
     var currentStd = standards[standards.length - 1];
     if (best.composite_score !== undefined && compositeStandards.length > 0) {
         for (var si = 0; si < compositeStandards.length; si++) {
-            if (best.composite_score < compositeStandards[si].max) {
+            if (best.composite_score >= compositeStandards[si].min) {
                 currentStd = compositeStandards[si];
                 break;
             }
@@ -2826,18 +2826,18 @@ function renderRBFAnalysisResults(data) {
     // ========== 综合评分热力图（固定高度容器） ==========
     html += '<div class="analysis-block">';
     html += '   <h3>📊 综合评分热力图（核函数 × 平滑度）</h3>';
-    html += '   <p style="color:#888;font-size:12px;margin:0 0 8px;">颜色越绿越优（0最优），越红越差。综合评分 = 0.5×norm(RMSE) + 0.3×norm(MAE) + 0.2×norm(max_error)</p>';
+    html += '   <p style="color:#888;font-size:12px;margin:0 0 8px;">颜色越绿越优（得分越高模型越好）。综合评分 = 1 − (0.5×norm(RMSE) + 0.3×norm(MAE) + 0.2×norm(max_error))</p>';
     html += '   <div id="rmseHeatmap" class="rbf-heatmap-container"></div>';
     html += '</div>';
 
     // ========== 参数表格 ==========
     var sorted = allResults.slice().sort(function(a, b) {
-        return (a.composite_score || a.rmse) - (b.composite_score || b.rmse);
+        return (b.composite_score || b.rmse) - (a.composite_score || a.rmse);
     });
     var topN = sorted.slice(0, 30);
 
     html += '<div class="analysis-block">';
-    html += '   <h3>📋 参数组合明细（按综合评分升序，前 30 项）</h3>';
+    html += '   <h3>📋 参数组合明细（按综合评分降序，前 30 项）</h3>';
     html += '   <table class="report-table"><thead><tr>';
     html += '       <th>排名</th><th>核函数</th><th>平滑度</th><th>epsilon</th>';
     html += '       <th>综合评分</th><th>RMSE(m)</th><th>MAE(m)</th><th>最大误差(m)</th><th>评价</th>';
@@ -2871,8 +2871,7 @@ function renderRBFAnalysisResults(data) {
     // ── 综合评分标准 ──
     if (compositeStandards.length > 0) {
         html += '   <h3>📖 综合评分参考标准</h3>';
-        html += '   <p style="color:#888;font-size:12px;margin:0 0 8px;">综合评分 = '
-            + '0.5×norm(RMSE) + 0.3×norm(MAE) + 0.2×norm(max_error)，0=最优，越高越差</p>';
+        html += '   <p style="color:#888;font-size:12px;margin:0 0 8px;">综合评分 = 1 − (0.5×norm(RMSE) + 0.3×norm(MAE) + 0.2×norm(max_error))，1=最优，越高越好</p>';
         html += '   <table class="report-table standards-table"><thead><tr>';
         html += '       <th>综合评分范围</th><th>评价</th><th>建议</th>';
         html += '   </tr></thead><tbody>';
@@ -2880,11 +2879,16 @@ function renderRBFAnalysisResults(data) {
         for (var ci = 0; ci < compositeStandards.length; ci++) {
             var cst = compositeStandards[ci];
             var cIsCur = isCompositeCurrent
-                && best.composite_score < cst.max
-                && (ci === 0 || best.composite_score >= compositeStandards[ci - 1].max);
-            var cRange = cst.max >= 99999
-                ? '≥ ' + compositeStandards[compositeStandards.length - 2].max
-                : '< ' + cst.max;
+                && best.composite_score >= cst.min
+                && (ci === 0 || best.composite_score < compositeStandards[ci - 1].min);
+            var cRange;
+            if (ci === 0) {
+                cRange = '≥ ' + cst.min.toFixed(2);
+            } else if (ci === compositeStandards.length - 1) {
+                cRange = '< ' + compositeStandards[ci - 1].min.toFixed(2);
+            } else {
+                cRange = cst.min.toFixed(2) + ' ~ ' + compositeStandards[ci - 1].min.toFixed(2);
+            }
             var cRowStyle = cIsCur ? 'background:' + cst.color + '22;font-weight:bold;' : '';
             html += '<tr class="' + (cIsCur ? 'current-standard' : '') + '" style="' + cRowStyle + '">';
             html += '   <td>' + cRange + '</td>';
@@ -3016,11 +3020,12 @@ function drawRMSEHeatmap(allResults) {
         yLabels.push(rk.label);
     }
 
-    // 从单元格综合评分值计算 zmax（105% 上浮），确保最小值也为 0 附近可视化
+    // 综合评分（得分越高越好，1=最优）：取实际范围并做边界处理
     cellScores.sort(function(a, b) { return a - b; });
+    var cellMin = cellScores.length > 0 ? cellScores[0] : 0;
     var cellMax = cellScores.length > 0 ? cellScores[cellScores.length - 1] : 1;
-    var zmax = Math.max(Math.ceil(cellMax * 1.05 * 100) / 100, 0.01);
-    var zmin = 0;
+    var zmin = Math.max(0, Math.floor(cellMin * 100) / 100);
+    var zmax = Math.min(1.0, Math.ceil(cellMax * 1.05 * 100) / 100);
 
     console.log('[RBF热力图] yLabels:', yLabels, '单元格数:', cellScores.length, 'cellMax:', cellMax, 'zmax:', zmax);
 
@@ -3029,7 +3034,11 @@ function drawRMSEHeatmap(allResults) {
         x: smooths.map(String),
         y: yLabels,
         type: 'heatmap',
-        colorscale: 'RdYlGn_r',
+        colorscale: [
+                [0, '#d32f2f'],
+                [0.5, '#ff9800'],
+                [1, '#2e7d32']
+            ],
         showscale: true,
         zauto: false,
         zmin: zmin,
@@ -3051,7 +3060,7 @@ function drawRMSEHeatmap(allResults) {
     var heatmapDiv = document.getElementById('rmseHeatmap');
     if (heatmapDiv && typeof Plotly !== 'undefined') {
         Plotly.newPlot(heatmapDiv, [trace], layout, { responsive: true });
-        console.log('[RBF热力图] Plotly 已渲染，矩阵行数:', rmseMatrix.length, '列数:', rmseMatrix[0] ? rmseMatrix[0].length : 0);
+        console.log('[RBF热力图] Plotly 已渲染，矩阵行数:', scoreMatrix.length, '列数:', scoreMatrix[0] ? scoreMatrix[0].length : 0);
     } else {
         console.warn('[RBF热力图] 无法渲染: heatmapDiv=' + !!heatmapDiv + ' Plotly=' + (typeof Plotly));
     }
@@ -3160,7 +3169,7 @@ function renderKrigingParamResults(data) {
     var currentStd = standards[standards.length - 1];
     if (best.composite_score !== undefined && compositeStandards.length > 0) {
         for (var si = 0; si < compositeStandards.length; si++) {
-            if (best.composite_score < compositeStandards[si].max) {
+            if (best.composite_score >= compositeStandards[si].min) {
                 currentStd = compositeStandards[si];
                 break;
             }
@@ -3276,11 +3285,11 @@ function renderKrigingParamResults(data) {
 
     // ========== 参数表格（含新列） ==========
     var sorted = allResults.slice().sort(function(a, b) {
-        return (a.composite_score || a.rmse) - (b.composite_score || b.rmse);
+        return (b.composite_score || b.rmse) - (a.composite_score || a.rmse);
     });
 
     html += '<div class="analysis-block">';
-    html += '   <h3>📋 模型明细（按综合评分升序）</h3>';
+    html += '   <h3>📋 模型明细（按综合评分降序）</h3>';
     html += '   <div class="table-scrollable">';
     html += '   <table class="report-table"><thead><tr>';
     html += '       <th>排名</th><th>变异函数模型</th><th>综合评分</th><th>RMSE(m)</th><th>MAE(m)</th><th>最大误差(m)</th><th>块金值</th><th>基台值</th><th>块基比</th><th>变程</th><th>R²</th><th>评价</th>';
@@ -3316,16 +3325,21 @@ function renderKrigingParamResults(data) {
     // 综合评分标准（优先展示）
     if (compositeStandards.length > 0) {
         html += '   <h4 style="margin:12px 0 6px;font-size:14px;">⭐ 综合评分评价标准</h4>';
-        html += '   <p style="color:#888;font-size:12px;margin:0 0 8px;">综合评分 = 0.5×norm(RMSE) + 0.3×norm(MAE) + 0.2×norm(max_error)，0=最优，越高越差</p>';
+        html += '   <p style="color:#888;font-size:12px;margin:0 0 8px;">综合评分 = 1 − (0.5×norm(RMSE) + 0.3×norm(MAE) + 0.2×norm(max_error))，1=最优，越高越好</p>';
         html += '   <table class="report-table standards-table"><thead><tr>';
         html += '       <th>综合评分范围</th><th>评价</th><th>建议</th>';
         html += '   </tr></thead><tbody>';
         for (var csi = 0; csi < compositeStandards.length; csi++) {
             var cst = compositeStandards[csi];
             var isCsCurrent = (cst === currentStd);
-            var csRangeText = cst.max >= 99999
-                ? '> ' + compositeStandards[compositeStandards.length - 2].max.toFixed(2)
-                : '< ' + cst.max.toFixed(2);
+            var csRangeText;
+            if (csi === 0) {
+                csRangeText = '≥ ' + cst.min.toFixed(2);
+            } else if (csi === compositeStandards.length - 1) {
+                csRangeText = '< ' + compositeStandards[csi - 1].min.toFixed(2);
+            } else {
+                csRangeText = cst.min.toFixed(2) + ' ~ ' + compositeStandards[csi - 1].min.toFixed(2);
+            }
             var csRowStyle = isCsCurrent ? 'background:' + cst.color + '22;font-weight:bold;' : '';
             html += '<tr class="' + (isCsCurrent ? 'current-standard' : '') + '" style="' + csRowStyle + '">';
             html += '   <td>' + csRangeText + '</td>';
@@ -3817,6 +3831,16 @@ function renderReportCharts(data) {
     }
 
     chartsDiv.innerHTML = html;
+
+    // 无可用图表时显示提示信息
+    if (!html) {
+        html = '<p style="text-align:center;padding:30px 20px;color:#888;font-size:14px;">'
+             + '暂无图表数据。对比图表需要<strong>同时存在 RBF 和克里金</strong>两种分析结果才能生成。'
+             + '请先在"克里金参数分析"中执行分析。'
+             + '</p>';
+        chartsDiv.innerHTML = html;
+        return;
+    }
 
     if (data.has_rbf && data.has_kriging && currentAnalysisMode === 'all') {
         drawScatterChart(data);

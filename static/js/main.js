@@ -53,6 +53,20 @@ function formatFileSize(bytes) {
     return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
 }
 
+// 坐标/高程列的列名（开孔坐标E、开孔坐标N、开孔高程R 等）
+function isCoordColumn(name) {
+    return /坐标|高程/.test(String(name));
+}
+
+// 坐标类数值统一显示为「保留两位小数的普通数字」(如 3232138.97)，
+// 既不用 3.1825M / 523.55K 这类缩写，也不显示浮点原始全精度。
+// 无法转成数字时返回 null，由调用方决定回退显示。
+function formatCoord2(val) {
+    if (val === undefined || val === null || val === '') return null;
+    const n = Number(val);
+    return Number.isFinite(n) ? n.toFixed(2) : null;
+}
+
 function updateButtonStates() {
     var hasFile = !!sessionId;
     var hasModelViews = modelData && modelData.color_map && Object.keys(modelData.color_map).length > 0;
@@ -2409,7 +2423,7 @@ function renderIntersectionTab(data) {
     if (data.details && data.details.length > 0) {
         html.push('<div class="quality-block"><h4>穿层位置详情（最多显示 5 处）</h4><ul class="quality-list">');
         data.details.forEach(function(d) {
-            html.push('<li>岩性 <strong>' + d.layer + '</strong> 在 (' + d.x.toFixed(1) + ', ' + d.y.toFixed(1) + ') 处差值 ' + d.gap.toFixed(2) + ' m</li>');
+            html.push('<li>岩性 <strong>' + d.layer + '</strong> 在 (' + Number(d.x).toFixed(2) + ', ' + Number(d.y).toFixed(2) + ') 处差值 ' + d.gap.toFixed(2) + ' m</li>');
         });
         html.push('</ul></div>');
     }
@@ -4231,6 +4245,11 @@ function renderTable(data, tabName) {
         bodyHtml += '<tr>';
         for (const h of headers) {
             let val = row[h] !== undefined && row[h] !== null ? row[h] : '';
+            if (isCoordColumn(h)) {
+                // 坐标列保留两位小数（如 3232138.97）
+                const coord = formatCoord2(val);
+                if (coord !== null) val = coord;
+            }
             if (h === '建模颜色' && val && String(val).startsWith('#')) {
                 bodyHtml += `<td><span class="color-swatch-inline" style="background-color:${val};"></span> ${val}</td>`;
             } else {
@@ -4508,9 +4527,9 @@ function updatePreviewMapMarkers() {
                     🔹 ${p.钻孔编号}
                 </div>
                 <div style="font-size:13px;color:#333;line-height:1.7;">
-                    <div>开孔坐标E: ${p.开孔坐标E || '--'}</div>
-                    <div>开孔坐标N: ${p.开孔坐标N || '--'}</div>
-                    <div>开孔高程R: ${p.开孔高程R || '--'} m</div>
+                    <div>开孔坐标E: ${formatCoord2(p.开孔坐标E) || '--'}</div>
+                    <div>开孔坐标N: ${formatCoord2(p.开孔坐标N) || '--'}</div>
+                    <div>开孔高程R: ${formatCoord2(p.开孔高程R) || '--'} m</div>
                     <div>钻孔长度: ${p.钻孔长度 || '--'} m</div>
                 </div>
             </div>

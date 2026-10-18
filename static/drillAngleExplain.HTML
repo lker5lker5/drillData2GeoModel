@@ -185,7 +185,7 @@
             </div>
             <input type="range" id="azimuthSlider" min="0" max="360" value="338">
             <div class="range-ticks"><span>0°(N)</span><span>90°(E)</span><span>180°(S)</span><span>270°(W)</span><span>360°(N)</span></div>
-            <div class="note">以正北 Y 为 0°，顺时针旋转</div>
+            <div class="note">以正北（N）为 0°，顺时针旋转</div>
         </div>
 
         <div class="control-group dip-group" id="dipGroup">
@@ -204,7 +204,7 @@
             <p class="section-subtitle">📐 计算结果</p>
             <div class="result-box accent-red">
                 <div class="result-row">
-                    <span class="result-label"><span class="dot-inline red"></span>X轴夹角（平面）</span>
+                    <span class="result-label"><span class="dot-inline red"></span>东向夹角（平面）</span>
                     <span class="result-value" id="xAngleResult">248°</span>
                 </div>
                 <div class="result-formula">方位角 − 90°</div>
@@ -224,8 +224,8 @@
 
 <div id="legend">
     <h3>图例</h3>
-    <div class="legend-item"><span class="legend-dot" style="background:#00aa00"></span> Y 轴（正北 North）</div>
-    <div class="legend-item"><span class="legend-dot" style="background:#cc0000"></span> X 轴（正东 East）</div>
+    <div class="legend-item"><span class="legend-dot" style="background:#00aa00"></span> 北（N，正北）</div>
+    <div class="legend-item"><span class="legend-dot" style="background:#cc0000"></span> 东（E，正东）</div>
     <div class="legend-item"><span class="legend-dot" style="background:#0066cc"></span> Z 轴（天顶 Up）</div>
     <div class="legend-item"><span class="legend-line" style="background:#333"></span> 钻孔实体</div>
     <div class="legend-item"><span class="legend-line" style="background:transparent;border-bottom:1px dashed #aaa;height:0"></span> 地面投影</div>
@@ -255,8 +255,8 @@
 
     // ── 轴颜色：保持原值（亮色），透明度 0.7 ──
     const AXIS = {
-        x: { color: 0xcc0000, label: 'X（东）', labelColor: '#cc0000', dir: new THREE.Vector3(1,0,0) },
-        y: { color: 0x00aa00, label: 'Y（北）', labelColor: '#00aa00', dir: new THREE.Vector3(0,0,-1) },
+        x: { color: 0xcc0000, label: '东（E）', labelColor: '#cc0000', dir: new THREE.Vector3(1,0,0) },
+        y: { color: 0x00aa00, label: '北（N）', labelColor: '#00aa00', dir: new THREE.Vector3(0,0,-1) },
         z: { color: 0x0066cc, label: 'Z（上）', labelColor: '#0066cc', dir: new THREE.Vector3(0,1,0) },
     };
 
@@ -359,7 +359,7 @@
 
         // ── 标签 ──
         azimuthLabel = createArcLabel('方位角', new THREE.Vector3());
-        xAngleLabel  = createArcLabel('X轴夹角', new THREE.Vector3());
+        xAngleLabel  = createArcLabel('东向夹角', new THREE.Vector3());
         dipLabel     = createArcLabel('倾角', new THREE.Vector3());
         zAngleLabel  = createArcLabel('Z轴补角', new THREE.Vector3());
 
@@ -711,7 +711,8 @@
         azimuthLabel.element.style.color = '#2E7D32';
         azimuthLabel.element.style.borderColor = '#2E7D32';
 
-        // ── X轴夹角弧（水平面内，从东到 projDir）──
+        // ── 东向夹角弧（水平面内，从东到 projDir）。注意：本演示页用东/北/上三轴，
+        //    不使用 X/Y 轴名，避免与出图约定（X 轴=北、Y 轴=东）混淆 ──
         let xDeg = config.azimuth - 90;
         if (xDeg < 0) xDeg += 360;
         xDeg = Math.round(xDeg * 10) / 10;
@@ -722,7 +723,7 @@
 
         const xMid = eastVec.clone().applyAxisAngle(UP, -THREE.MathUtils.degToRad(xDeg)/2).multiplyScalar(5.3);
         xAngleLabel.position.copy(xMid);
-        xAngleLabel.element.innerText = 'X轴夹角 ' + xDeg + '°';
+        xAngleLabel.element.innerText = '东向夹角 ' + xDeg + '°';
         xAngleLabel.element.style.color = '#cc0000';
         xAngleLabel.element.style.borderColor = '#cc0000';
 

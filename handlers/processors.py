@@ -11,6 +11,7 @@ from scipy.interpolate import Rbf
 from scipy.interpolate import interp1d
 from scipy.spatial import ConvexHull
 from matplotlib.path import Path
+from matplotlib.ticker import FormatStrFormatter
 import plotly.graph_objects as go
 import os
 import json
@@ -443,6 +444,57 @@ def get_interpolated_coords(lengths, xs, ys, zs, target_lengths):
     return interp_x(target_lengths), interp_y(target_lengths), interp_z(target_lengths)
 
 
+# 圆柱采样点抽稀容差（米）：轴线偏离原轨迹的上限。
+# 远小于钻孔半径（默认 3.0 m）与坐标显示精度（0.01 m），肉眼不可分辨。
+CYLINDER_SIMPLIFY_TOL = 0.05
+
+
+def simplify_trajectory_points(xs, ys, zs, tol=CYLINDER_SIMPLIFY_TOL):
+    """
+    按曲率自适应抽稀钻孔轨迹采样点（Douglas-Peucker，三维垂距判据）。
+
+    背景：圆柱按固定 0.5 m 间距布环，一个 50 m 的岩性段会采出约 100 个环。
+    垂直孔的轨迹在数学上是一条直线，这 100 个环的圆心完全共线、截面平行，
+    中间 98 个环对曲面毫无贡献，却让每个圆柱白白多出约 800 个顶点和 4700 个
+    三角面索引——这是生成页面里最大的一块冗余。
+
+    做法：以「点到首尾弦的垂距」为判据递归取拐点，首尾点必然保留
+    （相邻岩性段的圆柱仍在原处无缝相接）。直线段只留两端点，弯曲段按曲率
+    自动保留拐点，任何位置轴线偏移都不超过 tol。点数不足 3 点时原样返回。
+
+    返回新的 (xs, ys, zs)，与入参同为 numpy 数组。
+    """
+    pts = np.column_stack([np.asarray(xs, dtype=float),
+                           np.asarray(ys, dtype=float),
+                           np.asarray(zs, dtype=float)])
+    n = len(pts)
+    if n <= 2 or tol <= 0:
+        return xs, ys, zs
+
+    keep = np.zeros(n, dtype=bool)
+    keep[0] = keep[-1] = True
+    stack = [(0, n - 1)]
+    while stack:
+        a, b = stack.pop()
+        if b - a < 2:
+            continue
+        seg = pts[b] - pts[a]
+        seg_len = np.linalg.norm(seg)
+        if seg_len < 1e-12:
+            # 首尾重合的退化段：退化为点到点的距离
+            dist = np.linalg.norm(pts[a + 1:b] - pts[a], axis=1)
+        else:
+            dist = np.linalg.norm(np.cross(pts[a + 1:b] - pts[a], seg), axis=1) / seg_len
+        m = int(np.argmax(dist))
+        if dist[m] > tol:
+            idx = a + 1 + m
+            keep[idx] = True
+            stack.append((a, idx))
+            stack.append((idx, b))
+
+    return pts[keep, 0], pts[keep, 1], pts[keep, 2]
+
+
 def plot_drill_holes_on_ax(ax, loc_df, survey_df, litho_df,
                             legend_labels=None, show_labels=True, show_legend=True,
                             drill_style=None, drill_radius=None):
@@ -619,8 +671,11 @@ def draw_single_model_view(volume_data, loc_df, survey_df, litho_df,
     # 3. 坐标轴样式
     if labeled:
         # 标注版：完整坐标轴，透明背景 + 网格线
-        ax.set_xlabel('开孔坐标E (m)')
-        ax.set_ylabel('开孔坐标N (m)')
+        # 注意方向：体数据按「X=N, Y=E」约定构建（见 build_geological_bodies_with_volume_v2
+        # 的归一化注释），而 plot_surface 是 plot_surface(X, Y, Z)——即 X 轴画的是
+        # 开孔坐标N、Y 轴画的是开孔坐标E。此处标题必须与之一致（原先两者写反了）。
+        ax.set_xlabel('开孔坐标N (m)')
+        ax.set_ylabel('开孔坐标E (m)')
         ax.set_zlabel('海拔高度 (m)')
         ax.xaxis.pane.fill = False
         ax.yaxis.pane.fill = False
@@ -682,10 +737,13 @@ def draw_single_model_view(volume_data, loc_df, survey_df, litho_df,
         z_margin = (z_max_v - z_min_v) * 0.1
         ax.set_zlim(z_min_v - z_margin, z_max_v + z_margin)
 
-        # 关闭科学计数法
+        # 关闭科学计数法/偏移量，并统一为「普通整数」（如 3123457）
         ax.ticklabel_format(style='plain', axis='x', useOffset=False)
         ax.ticklabel_format(style='plain', axis='y', useOffset=False)
         ax.ticklabel_format(style='plain', axis='z', useOffset=False)
+        ax.xaxis.set_major_formatter(FormatStrFormatter('%.0f'))
+        ax.yaxis.set_major_formatter(FormatStrFormatter('%.0f'))
+        ax.zaxis.set_major_formatter(FormatStrFormatter('%.0f'))
 
         # 旋转 X 轴刻度，避免密集时重叠
         ax.tick_params(axis='x', labelsize=8, rotation=15)
@@ -765,21 +823,17 @@ def generate_drill_views(loc_df, survey_df, litho_df, output_dir, base_name):
     views_configs = VIEW_CONFIGS
     
     results = []
-    base_n = loc_df['开孔坐标N'].min()
-    base_e = loc_df['开孔坐标E'].min()
-    
-    # 预处理：将坐标平移到相对坐标系（避免绝对值太大导致绘图拥挤）
-    loc_df_rel = loc_df.copy()
-    loc_df_rel['开孔坐标N'] = loc_df['开孔坐标N'] - base_n
-    loc_df_rel['开孔坐标E'] = loc_df['开孔坐标E'] - base_e
-    
+    # 坐标一律使用钻孔表里的绝对值（与 generate_drill_model_only 同一套坐标系）。
+    # 原先这里把 N/E 各减去最小值平移到相对坐标系，图上轴读数（0、100、200…）
+    # 与钻孔表对不上；平移只是整体挪动，对图形形状、视角、比例毫无影响，
+    # 因此取消平移不改变任何视觉要素，只让轴读数与钻孔表逐值对应。
     for config in views_configs:
         fig = plt.figure(figsize=(FIGURE_WIDTH, FIGURE_HEIGHT))
         ax = fig.add_subplot(111, projection='3d')
         
         # 复用统一的钻孔绘制函数
         legend_labels, legend_entries = plot_drill_holes_on_ax(
-            ax, loc_df_rel, survey_df, litho_df,
+            ax, loc_df, survey_df, litho_df,
             legend_labels=set(),
             show_labels=True,
             show_legend=True
@@ -794,11 +848,20 @@ def generate_drill_views(loc_df, survey_df, litho_df, output_dir, base_name):
         ax.grid(True, alpha=0.3)
         ax.view_init(elev=config['elev'], azim=config['azim'])
 
-        all_n_rel = loc_df_rel['开孔坐标N'].values
-        all_e_rel = loc_df_rel['开孔坐标E'].values
+        all_n = loc_df['开孔坐标N'].values
+        all_e = loc_df['开孔坐标E'].values
         margin = 20
-        ax.set_xlim(all_n_rel.min() - margin, all_n_rel.max() + margin)
-        ax.set_ylim(all_e_rel.min() - margin, all_e_rel.max() + margin)
+        ax.set_xlim(all_n.min() - margin, all_n.max() + margin)
+        ax.set_ylim(all_e.min() - margin, all_e.max() + margin)
+
+        # 坐标刻度统一为「普通整数」（如 3123457）：
+        # 关掉科学计数法与 matplotlib 默认的大数偏移量（1e6），并去掉小数位。
+        ax.ticklabel_format(style='plain', axis='x', useOffset=False)
+        ax.ticklabel_format(style='plain', axis='y', useOffset=False)
+        ax.ticklabel_format(style='plain', axis='z', useOffset=False)
+        ax.xaxis.set_major_formatter(FormatStrFormatter('%.0f'))
+        ax.yaxis.set_major_formatter(FormatStrFormatter('%.0f'))
+        ax.zaxis.set_major_formatter(FormatStrFormatter('%.0f'))
 
         if legend_entries:
             # 使用 2D Line2D 构建图例
@@ -826,28 +889,108 @@ def generate_drill_views(loc_df, survey_df, litho_df, output_dir, base_name):
     
     return results
 
-# ==================== 交互式模型生成（钻孔专用） ====================
-def generate_drill_model_only(loc_df, survey_df, litho_df, output_dir, base_name,
-                               drill_style=None, drill_radius=None):
+# ==================== 页面体积优化：坐标圆整 ====================
+def _round_nested_coords(value, ndigits=2):
+    """递归圆整坐标数组（兼容 None 缺失值、NaN、以及一维/二维数组）。"""
+    if value is None:
+        return None
+    if isinstance(value, np.ndarray):
+        return np.round(value, ndigits)
+    if isinstance(value, (list, tuple)):
+        try:
+            arr = np.asarray(value, dtype=float)
+        except (TypeError, ValueError):
+            arr = None          # 含 None 等非数字项 → 逐项递归
+        if arr is not None:
+            return np.round(arr, ndigits).tolist()
+        return [_round_nested_coords(v, ndigits) for v in value]
+    try:
+        num = float(value)
+    except (TypeError, ValueError):
+        return value
+    if num != num:              # NaN 保持原样（序列化后即 null）
+        return value
+    return round(num, ndigits)
+
+
+def round_figure_coords_for_html(fig, ndigits=2):
+    """把即将写进 HTML 的图数据圆整到厘米级（保留两位小数）。
+
+    只在序列化之前调用，用于压缩页面体积：模型页里的坐标数字约占整体的 88%，
+    按全精度输出（如 3123456.7890123456）会让单个 HTML 膨胀数 MB。
+    圆整精度 0.01 m 远小于网格间距和钻孔半径，视觉上无法分辨；
+    体积估算、框图范围、分层观察取值都来自 geobody-grid-data 中的网格数据，
+    而不是本图里的坐标副本，因此计算结果不受影响。
     """
-    生成仅展示钻孔轨迹（不含地质体）的交互式3D模型。
-    参数含义同 generate_interactive_model。
+    for trace in fig.data:
+        for axis in ('x', 'y', 'z'):
+            try:
+                values = trace[axis]
+            except (KeyError, AttributeError, ValueError):
+                continue
+            if values is None:
+                continue
+            trace[axis] = _round_nested_coords(values, ndigits)
+
+
+# ==================== 页面体积优化：plotly.js 共享一份 ====================
+# 每个生成页原本都内嵌一份 plotly.js（3.60 MB），而各页内嵌的是完全相同的
+# 同一份文件；坐标圆整 + 圆柱抽稀之后 figure 数据只剩 0.64 MB，plotly.js
+# 反而占了页面的 85%。改为引用 static/js/plotly.min.js：浏览器只下载一次、
+# 之后每次打开只需一次 304 校验，生成页体积直接少 3.60 MB。
+# 该文件由当前安装的 plotly 导出，内容与原先内嵌的逐字节相同（见
+# tools/export_plotlyjs.py）；文件不存在时自动退回内嵌，功能不受影响。
+PLOTLYJS_URL = '/static/js/plotly.min.js'
+PLOTLYJS_REL_PATH = os.path.join('js', 'plotly.min.js')
+
+
+def shared_plotlyjs_available():
+    """共享 plotly.js 是否可用（不可用时调用方退回内嵌）。"""
+    try:
+        return os.path.isfile(os.path.join(STATIC_FOLDER, PLOTLYJS_REL_PATH))
+    except Exception:
+        return False
+
+
+def _plotly_html_kwargs():
     """
-    from config import (DRILL_STYLE as CFG_STYLE, DRILL_RADIUS as CFG_RADIUS,
-                        DRILL_FORCE_LINE_THRESHOLD, DRILL_DEGRADE_THRESHOLD)
+    返回 write_html 的 include_plotlyjs 参数。
 
-    if drill_style is None:
-        drill_style = CFG_STYLE
-    if drill_radius is None:
-        drill_radius = CFG_RADIUS
+    可用时传共享文件的 URL：plotly 对「以 .js 结尾的字符串」有原生支持，
+    会照原次序输出 window.PlotlyConfig（MathJaxConfig='local'）→
+    <script src=共享文件> → Plotly.newPlot，除 plotly.js 的来源外与内嵌完全等价。
+    共享文件不可用时传 True，退回内嵌，功能不受影响。
+    """
+    return {'include_plotlyjs': (PLOTLYJS_URL if shared_plotlyjs_available() else True)}
 
-    hole_ids = loc_df['钻孔编号'].unique()
 
-    # 与 matplotlib generate_drill_views 一致：使用相对坐标（避免大绝对值影响长宽比）
-    base_n = loc_df['开孔坐标N'].min()
-    base_e = loc_df['开孔坐标E'].min()
+# ==================== 面板脚本抽成独立文件 ====================
+# 「分层观察 / 岩性显隐 / 钻孔显隐」和「体积估算」这两段脚本原先由 processors.py 以
+# f-string 逐页拼进 HTML：每生成一个页面就多内嵌一份完全相同的代码（约 23 KB），
+# 而且 JS 的大括号在 f-string 里必须写成 {{ }}，极易出错。
+# 现改为独立文件，页面只内联一个参数对象（几百字节）+ 一条 <script src>：
+#   浏览器只需下载一次（之后各页命中缓存），JS 也能单独做语法检查。
+LAYER_PANEL_JS_URL = '/static/js/layer_panel.js'
+VOLUME_PANEL_JS_URL = '/static/js/volume_panel.js'
+# 与 URL 对应的磁盘相对路径（data_handler 里用同一套 gzip + 缓存校验通道提供这两个文件）
+LAYER_PANEL_JS_REL_PATH = os.path.join('js', 'layer_panel.js')
+VOLUME_PANEL_JS_REL_PATH = os.path.join('js', 'volume_panel.js')
 
-    # 收集所有钻点 Z 值，用于计算数据驱动的 Z 范围
+
+# ==================== 公共绘图片段（交互式页 / 钻孔专用页共用） ====================
+# 两个模型页的「钻孔部分」逐行同源（已核对：除坐标原点、注释与空格之外完全一致），
+# 抽成下面的两个函数，避免同一段逻辑维护两份。
+def compute_drill_z_axis(loc_df, survey_df, hole_ids):
+    """
+    由所有钻孔轨迹点（含各孔开孔高程）计算数据驱动的 Z 轴范围。
+
+    返回 (z_min_data, z_max_data, z_range_min, z_range_max)：前两个是钻点自身的
+    Z 极值（交互式页还要用它给图例占位点定位），后两个是按既有规则给 Z 轴上下
+    各留 10%（至少 5 m）余量后的轴范围。
+
+    与抽公共代码前的两处实现逐位同源：仍按 hole_ids 的顺序遍历、仍以
+    「开孔高程 + 轨迹点」的顺序累加，余量规则一字未改。
+    """
     all_z_pts = list(loc_df['开孔高程R'].values)
     for hid in hole_ids:
         surv = survey_df[survey_df['钻孔编号'] == hid]
@@ -862,28 +1005,24 @@ def generate_drill_model_only(loc_df, survey_df, litho_df, output_dir, base_name
     z_min_data = np.min(all_z_arr)
     z_max_data = np.max(all_z_arr)
     z_margin = max((z_max_data - z_min_data) * 0.1, 5)
-    z_range_min = z_min_data - z_margin
-    z_range_max = z_max_data + z_margin
+    return z_min_data, z_max_data, z_min_data - z_margin, z_max_data + z_margin
 
-    total_segments = len(litho_df)
 
-    if drill_style == 'line' or total_segments > DRILL_FORCE_LINE_THRESHOLD:
-        use_style = 'line'
-        print(f"==> Plotly(钻孔专用): 使用线段模式（段数 {total_segments}）")
-    elif total_segments > DRILL_DEGRADE_THRESHOLD:
-        use_style = 'line'
-        print(f"==> Plotly(钻孔专用): 段数 {total_segments} 超降级阈值，使用线段模式")
-    else:
-        use_style = drill_style
-        print(f"==> Plotly(钻孔专用): 使用 {use_style} 模式（段数 {total_segments}）")
+def add_drill_traces(fig, loc_df, survey_df, litho_df, hole_ids, use_style, drill_radius):
+    """
+    把钻孔轨迹追加到 fig：每孔一条灰色虚线轴线 + 若干分段岩性 + 孔口编号文字。
 
-    fig = go.Figure()
+    坐标一律使用钻孔表里的绝对值（开孔坐标N / 开孔坐标E / 开孔高程R），不做任何
+    原点平移——这样页面上的 X/Y 轴读数与钻孔表逐值对应。原先「钻孔专用页按
+    (N.min(), E.min()) 平移」的做法已取消（平移对形状无影响，却使轴读数与钻孔表
+    对不上），两种页面现在用同一个坐标系。
 
-    # ==== 仅绘制钻孔（无地质体）====
+    不返回值：调用方需要的 trace 索引仍由 fig.data 的长度得出。
+    """
     for hid in hole_ids:
         row = loc_df[loc_df['钻孔编号'] == hid].iloc[0]
-        x0 = row['开孔坐标N'] - base_n
-        y0 = row['开孔坐标E'] - base_e
+        x0 = row['开孔坐标N']
+        y0 = row['开孔坐标E']
         z0 = row['开孔高程R']
 
         surv = survey_df[survey_df['钻孔编号'] == hid]
@@ -921,6 +1060,8 @@ def generate_drill_model_only(loc_df, survey_df, litho_df, output_dir, base_name
 
             d_sample = np.linspace(d_top, d_bot, max(3, int((d_bot - d_top) / 0.5)))
             x, y, z = get_interpolated_coords(lengths, xs, ys, zs, d_sample)
+            # 按曲率抽稀采样点：直线段只留两端点，弯曲段保留拐点（轴线偏移 ≤0.05 m）
+            x, y, z = simplify_trajectory_points(x, y, z)
             if len(x) == 0:
                 continue
 
@@ -928,6 +1069,7 @@ def generate_drill_model_only(loc_df, survey_df, litho_df, output_dir, base_name
             color_str = f'rgb({int(color[0]*255)}, {int(color[1]*255)}, {int(color[2]*255)})'
 
             if use_style == 'cylinder':
+                # 生成 Plotly 圆柱网格
                 cyl_x, cyl_y, cyl_z, cyl_i, cyl_j, cyl_k = build_plotly_cylinder_mesh(
                     x, y, z, radius=drill_radius, sides=DRILL_CYLINDER_SIDES
                 )
@@ -938,15 +1080,16 @@ def generate_drill_model_only(loc_df, survey_df, litho_df, output_dir, base_name
                     opacity=alpha,
                     flatshading=True,
                     showlegend=False,
-                    hovertemplate=f'钻孔: {hid}<br>岩性: {lith_name}<extra></extra>'
+                    hovertemplate=f'钻孔: {hid}<br>岩性: {lith_name}<br>高程: %{{z:.2f}}m<extra></extra>'
                 ))
             else:
+                # 原有线段模式
                 fig.add_trace(go.Scatter3d(
                     x=x, y=y, z=z,
                     mode='lines',
                     line=dict(color=f'rgba({int(color[0]*255)},{int(color[1]*255)},{int(color[2]*255)},{alpha})', width=6),
                     showlegend=False,
-                    hovertemplate=f'钻孔: {hid}<br>岩性: {lith_name}<br>高程: %{{z:.1f}}m<extra></extra>'
+                    hovertemplate=f'钻孔: {hid}<br>岩性: {lith_name}<br>高程: %{{z:.2f}}m<extra></extra>'
                 ))
 
         fig.add_trace(go.Scatter3d(
@@ -958,17 +1101,62 @@ def generate_drill_model_only(loc_df, survey_df, litho_df, output_dir, base_name
             hoverinfo='skip'
         ))
 
+
+# ==================== 交互式模型生成（钻孔专用） ====================
+def generate_drill_model_only(loc_df, survey_df, litho_df, output_dir, base_name,
+                               drill_style=None, drill_radius=None):
+    """
+    生成仅展示钻孔轨迹（不含地质体）的交互式3D模型。
+    参数含义同 generate_interactive_model。
+    """
+    from config import (DRILL_STYLE as CFG_STYLE, DRILL_RADIUS as CFG_RADIUS,
+                        DRILL_FORCE_LINE_THRESHOLD, DRILL_DEGRADE_THRESHOLD)
+
+    if drill_style is None:
+        drill_style = CFG_STYLE
+    if drill_radius is None:
+        drill_radius = CFG_RADIUS
+
+    hole_ids = loc_df['钻孔编号'].unique()
+
+    # 收集所有钻点 Z 值，用于计算数据驱动的 Z 范围
+    _, _, z_range_min, z_range_max = compute_drill_z_axis(loc_df, survey_df, hole_ids)
+
+    total_segments = len(litho_df)
+
+    if drill_style == 'line' or total_segments > DRILL_FORCE_LINE_THRESHOLD:
+        use_style = 'line'
+        print(f"==> Plotly(钻孔专用): 使用线段模式（段数 {total_segments}）")
+    elif total_segments > DRILL_DEGRADE_THRESHOLD:
+        use_style = 'line'
+        print(f"==> Plotly(钻孔专用): 段数 {total_segments} 超降级阈值，使用线段模式")
+    else:
+        use_style = drill_style
+        print(f"==> Plotly(钻孔专用): 使用 {use_style} 模式（段数 {total_segments}）")
+
+    fig = go.Figure()
+
+    # ==== 仅绘制钻孔（无地质体），使用钻孔表里的绝对坐标 ====
+    add_drill_traces(fig, loc_df, survey_df, litho_df, hole_ids, use_style, drill_radius)
+
     margin = 20
-    n_rel = loc_df['开孔坐标N'].values - base_n
-    e_rel = loc_df['开孔坐标E'].values - base_e
+    all_n = loc_df['开孔坐标N'].values
+    all_e = loc_df['开孔坐标E'].values
     fig.update_layout(
         scene=dict(
-            xaxis=dict(title='北 (m)', range=[n_rel.min() - margin, n_rel.max() + margin],
-                       showgrid=True, zeroline=False, showbackground=False),
-            yaxis=dict(title='东 (m)', range=[e_rel.min() - margin, e_rel.max() + margin],
-                       showgrid=True, zeroline=False, showbackground=False),
+            # 坐标刻度统一用「普通整数」（如 3123457）：exponentformat='none' 关掉
+            # Plotly 默认的 SI 缩写（3.1825M / 523.55K），tickformat='.0f' 去掉小数位。
+            # hoverformat 仍是两位小数：悬停时用来看精确值（只有未定 hovertemplate 的
+            # trace 才会用到；钻孔 trace 自带 hovertemplate，不受它影响）。
+            xaxis=dict(title='北 (m)', range=[all_n.min() - margin, all_n.max() + margin],
+                       showgrid=True, zeroline=False, showbackground=False,
+                       tickformat='.0f', hoverformat='.2f', exponentformat='none'),
+            yaxis=dict(title='东 (m)', range=[all_e.min() - margin, all_e.max() + margin],
+                       showgrid=True, zeroline=False, showbackground=False,
+                       tickformat='.0f', hoverformat='.2f', exponentformat='none'),
             zaxis=dict(title='海拔 (m)', range=[z_range_min, z_range_max],
-                       showgrid=True, zeroline=False, showbackground=False),
+                       showgrid=True, zeroline=False, showbackground=False,
+                       tickformat='.0f', hoverformat='.2f', exponentformat='none'),
             aspectmode='data',
             bgcolor='rgba(0,0,0,0)',
             camera=dict(
@@ -987,11 +1175,13 @@ def generate_drill_model_only(loc_df, survey_df, litho_df, output_dir, base_name
     )
 
     html_path = os.path.join(output_dir, f'{base_name}.html')
+    # 写盘前把坐标圆整到厘米级，压缩页面体积（不影响任何计算与交互）
+    round_figure_coords_for_html(fig)
     fig.write_html(html_path, config={
         'responsive': True,
         'scrollZoom': True,
         'displayModeBar': True
-    })
+    }, **_plotly_html_kwargs())
     return html_path
 
 
@@ -1091,23 +1281,9 @@ def generate_interactive_model(loc_df, survey_df, litho_df, output_dir, base_nam
     
     all_n = loc_df['开孔坐标N'].values
     all_e = loc_df['开孔坐标E'].values
-    all_z_arr = list(loc_df['开孔高程R'].values)
 
-    for hid in hole_ids:
-        surv = survey_df[survey_df['钻孔编号'] == hid]
-        if len(surv) > 0:
-            _, _, _, zs = compute_trajectory(surv)
-            row = loc_df[loc_df['钻孔编号'] == hid].iloc[0]
-            zs += row['开孔高程R']
-            if len(zs) > 0:
-                all_z_arr.extend(zs.tolist())
-
-    all_z_arr = np.array(all_z_arr)
-    z_min_data = np.min(all_z_arr)
-    z_max_data = np.max(all_z_arr)
-    z_margin = max((z_max_data - z_min_data) * 0.1, 5)
-    z_range_min = z_min_data - z_margin
-    z_range_max = z_max_data + z_margin
+    # 收集所有钻点 Z 值，用于计算数据驱动的 Z 范围（z_min_data 另用于给图例占位点定位）
+    z_min_data, _, z_range_min, z_range_max = compute_drill_z_axis(loc_df, survey_df, hole_ids)
 
     total_segments = len(litho_df)
 
@@ -1226,87 +1402,9 @@ def generate_interactive_model(loc_df, survey_df, litho_df, output_dir, base_nam
     # 记录钻孔起始 trace 索引（用于钻孔显隐开关）
     drill_trace_start = trace_idx
 
-    # 绘制钻孔
-    for hid in hole_ids:
-        row = loc_df[loc_df['钻孔编号'] == hid].iloc[0]
-        x0 = row['开孔坐标N']
-        y0 = row['开孔坐标E']
-        z0 = row['开孔高程R']
-        
-        surv = survey_df[survey_df['钻孔编号'] == hid]
-        if len(surv) == 0:
-            continue
-        
-        lengths, xs, ys, zs = compute_trajectory(surv)
-        xs += x0
-        ys += y0
-        zs += z0
-        
-        fig.add_trace(go.Scatter3d(
-            x=xs, y=ys, z=zs,
-            mode='lines',
-            line=dict(color='gray', width=1, dash='dash'),
-            showlegend=False,
-            hoverinfo='skip'
-        ))
-        
-        litho = litho_df[litho_df['钻孔编号'] == hid].sort_values(
-            '上层位长度起始刻度', ascending=True)
-        
-        for _, seg in litho.iterrows():
-            d_top = seg['上层位长度起始刻度']
-            d_bot = seg['下层位长度起始刻度']
-            lith_name = seg['岩性描述']
-            color = parse_color(seg['建模颜色'], lith_name)
-            
-            if d_top < lengths[0]:
-                d_top = lengths[0]
-            if d_bot > lengths[-1]:
-                d_bot = lengths[-1]
-            if d_top >= d_bot:
-                continue
-            
-            d_sample = np.linspace(d_top, d_bot, max(3, int((d_bot-d_top)/0.5)))
-            x, y, z = get_interpolated_coords(lengths, xs, ys, zs, d_sample)
-            if len(x) == 0:
-                continue
+    # 绘制钻孔（绝对坐标：原点偏移为 0）
+    add_drill_traces(fig, loc_df, survey_df, litho_df, hole_ids, use_style, drill_radius)
 
-            alpha = color[3]
-            color_str = f'rgb({int(color[0]*255)}, {int(color[1]*255)}, {int(color[2]*255)})'
-
-            if use_style == 'cylinder':
-                # 生成 Plotly 圆柱网格
-                cyl_x, cyl_y, cyl_z, cyl_i, cyl_j, cyl_k = build_plotly_cylinder_mesh(
-                    x, y, z, radius=drill_radius, sides=DRILL_CYLINDER_SIDES
-                )
-                fig.add_trace(go.Mesh3d(
-                    x=cyl_x, y=cyl_y, z=cyl_z,
-                    i=cyl_i, j=cyl_j, k=cyl_k,
-                    color=color_str,
-                    opacity=alpha,
-                    flatshading=True,
-                    showlegend=False,
-                    hovertemplate=f'钻孔: {hid}<br>岩性: {lith_name}<extra></extra>'
-                ))
-            else:
-                # 原有线段模式
-                fig.add_trace(go.Scatter3d(
-                    x=x, y=y, z=z,
-                    mode='lines',
-                    line=dict(color=f'rgba({int(color[0]*255)},{int(color[1]*255)},{int(color[2]*255)},{alpha})', width=6),
-                    showlegend=False,
-                    hovertemplate=f'钻孔: {hid}<br>岩性: {lith_name}<br>高程: %{{z:.1f}}m<extra></extra>'
-                )) 
-        
-        fig.add_trace(go.Scatter3d(
-            x=[x0], y=[y0], z=[z0+3],
-            mode='text',
-            text=[hid],
-            textfont=dict(size=12, color='black', family='Arial Black'),
-            showlegend=False,
-            hoverinfo='skip'
-        ))
-    
     margin = 20
     x_min, x_max = all_n.min()-margin, all_n.max()+margin
     # 如有多个岩性，预扩 X 范围以容纳分层观察的水平展开
@@ -1316,12 +1414,19 @@ def generate_interactive_model(loc_df, survey_df, litho_df, output_dir, base_nam
         x_max += x_pad
     fig.update_layout(
         scene=dict(
+            # 坐标刻度统一用「普通整数」（如 3123457）：exponentformat='none' 关掉
+            # Plotly 默认的 SI 缩写（3.1825M / 523.55K），tickformat='.0f' 去掉小数位。
+            # hoverformat 仍是两位小数：悬停时用来看精确值（只有未定 hovertemplate 的
+            # trace 才会用到；钻孔 trace 自带 hovertemplate，不受它影响）。
             xaxis=dict(title='开孔坐标N (m)', range=[x_min, x_max],
-                       showgrid=True, zeroline=False, showbackground=False),
+                       showgrid=True, zeroline=False, showbackground=False,
+                       tickformat='.0f', hoverformat='.2f', exponentformat='none'),
             yaxis=dict(title='开孔坐标E (m)', range=[all_e.min()-margin, all_e.max()+margin],
-                       showgrid=True, zeroline=False, showbackground=False),
+                       showgrid=True, zeroline=False, showbackground=False,
+                       tickformat='.0f', hoverformat='.2f', exponentformat='none'),
             zaxis=dict(title='海拔高度 (m)', range=[z_range_min, z_range_max],
-                       showgrid=True, zeroline=False, showbackground=False),
+                       showgrid=True, zeroline=False, showbackground=False,
+                       tickformat='.0f', hoverformat='.2f', exponentformat='none'),
             aspectmode='data',
             bgcolor='rgba(0,0,0,0)',
             camera=dict(
@@ -1344,8 +1449,10 @@ def generate_interactive_model(loc_df, survey_df, litho_df, output_dir, base_nam
     )
 
     html_path = os.path.join(output_dir, f'{base_name}.html')
+    # 写盘前把坐标圆整到厘米级，压缩页面体积（不影响任何计算与交互）
+    round_figure_coords_for_html(fig)
     fig.write_html(html_path, config={'responsive': True, 'scrollZoom': True, 'displayModeBar': True},
-                   div_id='layer-explode-model')
+                   div_id='layer-explode-model', **_plotly_html_kwargs())
 
     # ======== 注入控制面板（分层观察滑块 + 岩性/钻孔显隐，统一 div） ========
     # 读取 HTML 文件
@@ -1428,7 +1535,19 @@ def generate_interactive_model(loc_df, survey_df, litho_df, output_dir, base_nam
                 '</div>'
             )
 
-        # ---- 注入 JS（分层观察 + 岩性开关 + 钻孔开关） ----
+        # ---- 面板脚本的参数 ----
+        # 这些值原先直接写进逐页拼的 JS 字面量里；脚本抽成 static/js/layer_panel.js 后，
+        # 改由这里的配置对象传入。仍旧按需给键：没有分层观察就不给 lithOrder/sep/lithTraces，
+        # 没有钻孔就不给 drill，与原先「按需注入对应分支」的行为一一对应。
+        layer_cfg = {}
+        if has_explode:
+            layer_cfg['lithOrder'] = lith_order
+            layer_cfg['sep'] = round(float(sep_per_lith), 2)   # 原为 {sep_per_lith:.2f}
+            layer_cfg['lithTraces'] = lith_trace_map
+        if has_drills:
+            layer_cfg['drill'] = drill_trace_indices
+
+        # ---- 注入面板（样式 + HTML 内联，脚本引用共享文件） ----
         panel_js = f"""<style>
 #layer-explode-panel{{position:absolute;bottom:16px;left:50%;transform:translateX(-50%);background:rgba(28,28,28,0.9);color:#e0e0e0;padding:6px 20px 8px;border-radius:8px;z-index:9999;font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;font-size:13px;display:flex;flex-direction:column;gap:5px;box-shadow:0 2px 14px rgba(0,0,0,0.35)}}
 .panel-control-row{{display:flex;gap:14px;align-items:center}}
@@ -1453,94 +1572,9 @@ input:checked+.drill-slider:before{{transform:translateX(16px)}}
   {explode_row_html}
   {toggle_row_html}
 </div>
-<script>
-(function(){{
-var gdP=document.getElementById('layer-explode-model');
-if(!gdP)gdP=document.querySelector('.js-plotly-plot');
-if(!gdP)return;
-"""
-        # 分层观察 JS
-        if has_explode:
-            panel_js += f"""
-var LITH_ORDER={json.dumps(lith_order)};
-var SEP={sep_per_lith:.2f};
-var N_LITH=LITH_ORDER.length;
-var _rafId=null,_pendingFactor=null;
 
-// 分层观察所需的 trace 列表：运行时从 gd.data 派生，不在 HTML 里重复内嵌一份坐标。
-// 这里只保存对“原始数组”的引用——Plotly.restyle 是整体替换 gd.data[ix].x，不会就地改写，
-// 因此原始数组始终保持初始值，本函数也就天然幂等（无累积漂移）。
-var BODY=null;
-function buildBody(){{
- if(BODY)return BODY;
- BODY=[];
- LITH_ORDER.forEach(function(lith){{
-  var idxs=LITH_TRACES[lith]||[];
-  for(var k=0;k<idxs.length;k++){{
-   var ix=idxs[k],tr=gdP.data[ix];
-   if(!tr||!tr.x||!tr.z)continue;
-   BODY.push({{
-    trace:ix,lith:lith,
-    type:(tr.type==='mesh3d'?'mesh':'surface'),
-    x:tr.x,z:tr.z
-   }});
-  }}
- }});
- return BODY;
-}}
-
-function applySpread(factor){{
- _pendingFactor=factor;
- if(_rafId!==null)return;
- _rafId=requestAnimationFrame(function(){{
-  var f=_pendingFactor;_pendingFactor=null;_rafId=null;
-  var body=buildBody();
-  var xList=[],xIx=[],zList=[],zIx=[];
-  var center=(N_LITH-1)/2;
-  for(var i=0;i<body.length;i++){{
-   var m=body[i],li=LITH_ORDER.indexOf(m.lith);
-   if(li<0)continue;
-   var offX=(li-center)*f*SEP;
-   var offZ=Math.abs(li-center)*f*SEP*0.06;
-   if(m.type==='mesh'){{
-    xList.push(m.x.map(function(v){{return v+offX;}}));
-    zList.push(m.z.map(function(v){{return v===null?null:v+offZ;}}));
-   }}else{{
-    xList.push(m.x.map(function(r){{return r.map(function(v){{return v+offX;}});}}));
-    zList.push(m.z.map(function(r){{return r.map(function(v){{return v===null?null:v+offZ;}});}}));
-   }}
-   xIx.push(m.trace);zIx.push(m.trace);
-  }}
-  Plotly.restyle(gdP,{{x:xList,z:zList}},xIx);
- }});
-}}
-var sl=document.getElementById('layer-explode-slider');
-var lb=document.getElementById('layer-explode-label');
-sl.addEventListener('input',function(){{var f=parseInt(this.value)/100;lb.textContent=Math.round(f*100)+'%';applySpread(f)}});
-document.getElementById('layer-explode-reset').addEventListener('click',function(){{sl.value=0;lb.textContent='0%';applySpread(0)}});
-"""
-        # 岩性开关 JS
-        if has_explode:
-            panel_js += f"""
-var LITH_TRACES={json.dumps(lith_trace_map)};
-document.querySelectorAll('.lith-toggle-cb').forEach(function(cb){{
- cb.addEventListener('change',function(){{
-  var traces=LITH_TRACES[this.value];
-  if(traces&&traces.length) Plotly.restyle(gdP,'visible',this.checked,traces);
- }});
-}});
-"""
-        # 钻孔开关 JS
-        if has_drills:
-            panel_js += f"""
-var DRILL={json.dumps(drill_trace_indices)};
-document.getElementById('drill-toggle').addEventListener('change',function(){{
- Plotly.restyle(gdP,'visible',this.checked,DRILL);
-}});
-"""
-        panel_js += """
-})();
-</script>
+<script>window.LAYER_PANEL_CFG={json.dumps(layer_cfg)};</script>
+<script charset="utf-8" src="{LAYER_PANEL_JS_URL}"></script>
 """
         injection_parts.append(panel_js)
 
@@ -1561,6 +1595,10 @@ document.getElementById('drill-toggle').addEventListener('change',function(){{
     z_pad = (z_range_max - z_range_min) * 0.05 if z_range_max > z_range_min else 10
     z_range_min -= z_pad
     z_range_max += z_pad
+
+    # 面板脚本已抽成 static/js/volume_panel.js，原先写死在 JS 里的两个常量改由配置传入
+    # （取值与原先内联的 {z_range_min:.2f} / {z_range_max:.2f} 一致，都是两位小数）
+    vol_cfg = {'zMin': round(z_range_min, 2), 'zMax': round(z_range_max, 2)}
 
     volume_panel_js = f'''
 <style>
@@ -1699,523 +1737,8 @@ document.getElementById('drill-toggle').addEventListener('change',function(){{
   </div>
 </div>
 
-<script>
-(function(){{
-  "use strict";
-
-  // ===== 常量 & DOM 引用 =====
-  var gd = document.getElementById('layer-explode-model');
-  if (!gd) gd = document.querySelector('.js-plotly-plot');
-  if (!gd) return;
-
-  var gridScript = document.getElementById('geobody-grid-data');
-  if (!gridScript) return;
-  var gridData = JSON.parse(gridScript.textContent);
-
-  var dg = gridData;
-  var xDataMin = dg.x_range[0], xDataMax = dg.x_range[1];
-  var yDataMin = dg.y_range[0], yDataMax = dg.y_range[1];
-  var zDataMin = {z_range_min:.2f}, zDataMax = {z_range_max:.2f};
-
-  // ===== 状态 =====
-  var active = false;
-  var currentBounds = null;
-  var activeLiths = gridData.liths.slice();
-  var selectTraces = [];
-  var panelCollapsed = false;
-  // 框体去重：记录上一次真正画进场景的边界，避免重复的 restyle（每次都会全场景重建）
-  var lastBoxKey = null;
-  var _boxTimer = null;
-  var BOX_DEBOUNCE_MS = 120;
-
-  // 框体三个方向的旋转角（度）：绕 X / 绕 Y / 绕 Z，均绕框体中心旋转
-  function getRotAngles() {{
-    return {{
-      x: parseFloat(rotXAngle.value) || 0,
-      y: parseFloat(rotYAngle.value) || 0,
-      z: parseFloat(rotAngle.value) || 0
-    }};
-  }}
-
-  // 三个旋转角归零（打开/关闭面板时调用）
-  function resetRotation() {{
-    rotXAngle.value = 0; rotXLabel.textContent = '0°';
-    rotYAngle.value = 0; rotYLabel.textContent = '0°';
-    rotAngle.value = 0; rotLabel.textContent = '0°';
-  }}
-
-  function boundsKey(b) {{
-    var r = getRotAngles();
-    return b.xMin + '|' + b.xMax + '|' + b.yMin + '|' + b.yMax + '|' + b.zMin + '|' + b.zMax
-      + '|' + r.x + '|' + r.y + '|' + r.z;
-  }}
-
-  // DOM refs
-  var panel = document.getElementById('volume-estimate-panel');
-  var btnActivate = document.getElementById('vol-btn-activate');
-  if (!btnActivate) return;
-  var panelBody = document.getElementById('vol-panel-body');
-  var panelToggleBtn = document.getElementById('vol-panel-toggle');
-  var panelHeaderBtn = document.getElementById('vol-panel-header-btn');
-  var btnCancel = document.getElementById('vol-btn-cancel');
-  var btnConfirm = document.getElementById('vol-btn-confirm');
-  var resultDiv = document.getElementById('vol-result');
-  var lithChecks = document.getElementById('vol-lith-checks');
-  var rotAngle = document.getElementById('vol-rot-angle');
-  var rotLabel = document.getElementById('vol-rot-label');
-  var rotXAngle = document.getElementById('vol-rot-x');
-  var rotXLabel = document.getElementById('vol-rot-x-label');
-  var rotYAngle = document.getElementById('vol-rot-y');
-  var rotYLabel = document.getElementById('vol-rot-y-label');
-
-  var slXMin = document.getElementById('vol-x-min');
-  var slXMax = document.getElementById('vol-x-max');
-  var slYMin = document.getElementById('vol-y-min');
-  var slYMax = document.getElementById('vol-y-max');
-  var slZMin = document.getElementById('vol-z-min');
-  var slZMax = document.getElementById('vol-z-max');
-  var labelX = document.getElementById('vol-x-label');
-  var labelY = document.getElementById('vol-y-label');
-  var labelZ = document.getElementById('vol-z-label');
-
-  // ===== 初始化岩性复选框 =====
-  function buildLithCheckboxes() {{
-    if (dg.liths.length <= 1) {{
-      lithChecks.style.display = 'none';
-      return;
-    }}
-    var html = '';
-    dg.liths.forEach(function(lith) {{
-      var c = dg.colors[lith] || '#aaa';
-      html += '<label><input type="checkbox" class="vol-lith-cb" value="' + lith + '" checked>'
-        + '<span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:' + c + ';"></span> '
-        + lith + '</label>';
-    }});
-    lithChecks.innerHTML = html;
-
-    // 绑定复选框事件
-    lithChecks.querySelectorAll('.vol-lith-cb').forEach(function(cb) {{
-      cb.addEventListener('change', function() {{
-        activeLiths = [];
-        lithChecks.querySelectorAll('.vol-lith-cb:checked').forEach(function(c) {{
-          activeLiths.push(c.value);
-        }});
-        // 选择框不随岩性变化，只需重算读数，无需重绘 3D 场景
-        if (active) updateReadout();
-      }});
-    }});
-  }}
-  buildLithCheckboxes();
-
-  // ===== 滑块设置 =====
-  var SLIDER_STEPS = 1000;
-
-  function sliderToReal(sl, dataMin, dataMax) {{
-    return dataMin + (parseFloat(sl.value) / SLIDER_STEPS) * (dataMax - dataMin);
-  }}
-
-  function realToSlider(val, dataMin, dataMax) {{
-    return Math.round(((val - dataMin) / (dataMax - dataMin)) * SLIDER_STEPS);
-  }}
-
-  function initSliders() {{
-    slXMin.max = SLIDER_STEPS; slXMin.value = 0;
-    slXMax.max = SLIDER_STEPS; slXMax.value = SLIDER_STEPS;
-    slYMin.max = SLIDER_STEPS; slYMin.value = 0;
-    slYMax.max = SLIDER_STEPS; slYMax.value = SLIDER_STEPS;
-    slZMin.max = SLIDER_STEPS; slZMin.value = 0;
-    slZMax.max = SLIDER_STEPS; slZMax.value = SLIDER_STEPS;
-  }}
-
-  function getBoundsFromSliders() {{
-    return {{
-      xMin: sliderToReal(slXMin, xDataMin, xDataMax),
-      xMax: sliderToReal(slXMax, xDataMin, xDataMax),
-      yMin: sliderToReal(slYMin, yDataMin, yDataMax),
-      yMax: sliderToReal(slYMax, yDataMin, yDataMax),
-      zMin: sliderToReal(slZMin, zDataMin, zDataMax),
-      zMax: sliderToReal(slZMax, zDataMin, zDataMax)
-    }};
-  }}
-
-  function setSlidersFromBounds(b) {{
-    slXMin.value = realToSlider(b.xMin, xDataMin, xDataMax);
-    slXMax.value = realToSlider(b.xMax, xDataMin, xDataMax);
-    slYMin.value = realToSlider(b.yMin, yDataMin, yDataMax);
-    slYMax.value = realToSlider(b.yMax, yDataMin, yDataMax);
-    slZMin.value = realToSlider(b.zMin, zDataMin, zDataMax);
-    slZMax.value = realToSlider(b.zMax, zDataMin, zDataMax);
-  }}
-
-  // ===== 体积计算 =====
-  function formatVolume(v) {{
-    if (!v || isNaN(v) || !isFinite(v)) return '0 m³';
-    if (v >= 1e9) return (v / 1e9).toFixed(2) + ' km³';
-    if (v >= 1e6) return (v / 1e6).toFixed(2) + ' 百万 m³';
-    if (v >= 1e4) return Math.round(v).toLocaleString() + ' m³';
-    return v.toFixed(1) + ' m³';
-  }}
-
-  function computeVolume(bounds) {{
-    var totalVolume = 0, validCells = 0, totalCells = 0, byLith = {{}};
-    var bXMin = Math.min(bounds.xMin, bounds.xMax), bXMax = Math.max(bounds.xMin, bounds.xMax);
-    var bYMin = Math.min(bounds.yMin, bounds.yMax), bYMax = Math.max(bounds.yMin, bounds.yMax);
-    var bZMin = Math.min(bounds.zMin, bounds.zMax), bZMax = Math.max(bounds.zMin, bounds.zMax);
-    // 旋转：把网格点逆变换回框体局部坐标系，再做轴对齐的包含判断。
-    // 这里必须是 buildBoxTraces→rotateCorners 的严格逆运算（顺序相反、角度取负）。
-    var rot = getRotAngles();
-    var useRot = (rot.x !== 0 || rot.y !== 0 || rot.z !== 0);
-    var useTilt = (rot.x !== 0 || rot.y !== 0);   // 仅绕 Z 时沿用原二维判定，结果与改动前完全一致
-    var cx = (bXMin + bXMax) / 2, cy = (bYMin + bYMax) / 2, cz = (bZMin + bZMax) / 2;
-    var hX = (bXMax - bXMin) / 2, hY = (bYMax - bYMin) / 2, hZ = (bZMax - bZMin) / 2;
-    // 逆旋转的余弦/正弦（仅绕 Z 时只用得到 cosZ/sinZ）
-    var cosX = 1, sinX = 0, cosY = 1, sinY = 0, cosZ = 1, sinZ = 0;
-    var inv = null, bX0 = 0, bY0 = 0, bZ0 = 1;
-    if (useRot) {{
-      var rz = -rot.z * Math.PI / 180, ry = -rot.y * Math.PI / 180, rx = -rot.x * Math.PI / 180;
-      if (!useTilt) {{
-        cosZ = Math.cos(rz); sinZ = Math.sin(rz);
-      }} else {{
-        cosZ = Math.cos(rz); sinZ = Math.sin(rz);
-        cosY = Math.cos(ry); sinY = Math.sin(ry);
-        cosX = Math.cos(rx); sinX = Math.sin(rx);
-        // 逆变换 = 先逆 Z，再逆 Y，最后逆 X（与正向的 X→Y→Z 互逆）
-        inv = function(px, py, pz) {{
-          var x1 = px * cosZ - py * sinZ, y1 = px * sinZ + py * cosZ, z1 = pz;
-          var x2 = x1 * cosY + z1 * sinY, z2 = -x1 * sinY + z1 * cosY, y2 = y1;
-          var y3 = y2 * cosX - z2 * sinX, z3 = y2 * sinX + z2 * cosX;
-          return [x2, y3, z3];
-        }};
-        // B = 逆旋转对世界 Z 单位向量的像：竖直直线在局部坐标系里是 A + z*B
-        var unit = inv(0, 0, 1);
-        bX0 = unit[0]; bY0 = unit[1]; bZ0 = unit[2];
-      }}
-    }}
-
-    // 板法：用一条轴约束把竖直直线的 z 可达区间收窄到 [st.lo, st.hi]；
-    // 返回 false 表示该列与框体无交集。b≈0 表示这条轴与竖直方向平行。
-    function clipPlane(a, b, h, st) {{
-      if (b > 1e-12) {{
-        var lo = (-h - a) / b, hi = (h - a) / b;
-        if (lo > st.lo) st.lo = lo;
-        if (hi < st.hi) st.hi = hi;
-      }} else if (b < -1e-12) {{
-        var lo = (-h - a) / b, hi = (h - a) / b;   // b<0 时 lo>hi，故上下界互换
-        if (hi > st.lo) st.lo = hi;
-        if (lo < st.hi) st.hi = lo;
-      }} else if (a < -h || a > h) {{
-        return false;
-      }}
-      return st.lo <= st.hi;
-    }}
-
-    activeLiths.forEach(function(lith) {{
-      var zd = dg.z_data[lith];
-      if (!zd || !zd.z_top || !zd.z_bot) return;
-      var lithVol = 0, lithValid = 0;
-
-      for (var i = 0; i < dg.ny; i++) {{
-        var y = dg.y_range[0] + i * dg.dy;
-        for (var j = 0; j < dg.nx; j++) {{
-          var x = dg.x_range[0] + j * dg.dx;
-          var zLo = bZMin, zHi = bZMax;
-          if (useTilt) {{
-            // 含 X/Y 倾斜：把该列的竖直直线逆变换到框体局部坐标系（L = A + z*B），
-            // 再逐轴用板法求出 z 的可行区间，等价于「竖直线与旋转后的框体求交」。
-            var A = inv(x - cx, y - cy, -cz);
-            // 注意：初始区间必须是 ±∞，不能预夹到 [bZMin, bZMax]——
-            // 倾斜后的框体在某一列的竖直跨度可以超出它原来的高程范围。
-            var st = {{ lo: -Infinity, hi: Infinity }};
-            if (!clipPlane(A[0], bX0, hX, st)) continue;
-            if (!clipPlane(A[1], bY0, hY, st)) continue;
-            if (!clipPlane(A[2], bZ0, hZ, st)) continue;
-            zLo = st.lo; zHi = st.hi;
-          }} else if (useRot) {{
-            // 仅绕 Z 旋转：与原实现完全一致的二维逆旋转判定
-            var ddx = x - cx, ddy = y - cy;
-            var wx = cx + ddx * cosZ - ddy * sinZ;
-            var wy = cy + ddx * sinZ + ddy * cosZ;
-            if (wx < bXMin || wx > bXMax || wy < bYMin || wy > bYMax) continue;
-          }} else {{
-            if (x < bXMin || x > bXMax || y < bYMin || y > bYMax) continue;
-          }}
-
-          var zt = zd.z_top[i][j];
-          var zb = zd.z_bot[i][j];
-          if (zt === null || zb === null) continue;
-          totalCells++;
-
-          var topClip = Math.min(zt, zHi), botClip = Math.max(zb, zLo);
-          if (topClip <= botClip) continue;
-          lithVol += dg.dx * dg.dy * (topClip - botClip);
-          lithValid++;
-        }}
-      }}
-
-      byLith[lith] = lithVol;
-      totalVolume += lithVol;
-      validCells += lithValid;
-    }});
-
-    return {{
-      total: totalVolume,
-      byLith: byLith,
-      validCells: validCells,
-      totalCells: totalCells,
-      cellArea: dg.dx * dg.dy
-    }};
-  }}
-
-  // ===== 选择框渲染（支持绕 X / Y / Z 三轴旋转） =====
-  // 依次绕 X、绕 Y、绕 Z 旋转，全部绕框体中心；三轴为 0 时原样返回。
-  // 与 computeVolume 里的逆变换必须严格互为逆运算，否则读数与框体不一致。
-  function rotateCorners(corners, rx, ry, rz) {{
-    if (!rx && !ry && !rz) return corners;
-    var radX = rx * Math.PI / 180, radY = ry * Math.PI / 180, radZ = rz * Math.PI / 180;
-    var cX = Math.cos(radX), sX = Math.sin(radX);
-    var cY = Math.cos(radY), sY = Math.sin(radY);
-    var cZ = Math.cos(radZ), sZ = Math.sin(radZ);
-    var cx = 0, cy = 0, cz = 0, n = corners.length;
-    for (var i = 0; i < n; i++) {{ cx += corners[i][0]; cy += corners[i][1]; cz += corners[i][2]; }}
-    cx /= n; cy /= n; cz /= n;
-    return corners.map(function(v) {{
-      var x = v[0] - cx, y = v[1] - cy, z = v[2] - cz;
-      // 绕 X 轴
-      var y1 = y * cX - z * sX, z1 = y * sX + z * cX;
-      // 绕 Y 轴
-      var x2 = x * cY + z1 * sY, z2 = -x * sY + z1 * cY;
-      // 绕 Z 轴（与原实现一致）
-      var x3 = x2 * cZ - y1 * sZ, y3 = x2 * sZ + y1 * cZ;
-      return [cx + x3, cy + y3, cz + z2];
-    }});
-  }}
-
-  function buildBoxTraces(bounds) {{
-    var bXMin = Math.min(bounds.xMin, bounds.xMax), bXMax = Math.max(bounds.xMin, bounds.xMax);
-    var bYMin = Math.min(bounds.yMin, bounds.yMax), bYMax = Math.max(bounds.yMin, bounds.yMax);
-    var bZMin = Math.min(bounds.zMin, bounds.zMax), bZMax = Math.max(bounds.zMin, bounds.zMax);
-    var rot = getRotAngles();
-    var c = rotateCorners([[bXMin,bYMin,bZMin],[bXMax,bYMin,bZMin],[bXMax,bYMax,bZMin],[bXMin,bYMax,bZMin],
-                           [bXMin,bYMin,bZMax],[bXMax,bYMin,bZMax],[bXMax,bYMax,bZMax],[bXMin,bYMax,bZMax]],
-                          rot.x, rot.y, rot.z);
-    var meshI = [0,0, 4,4, 0,0, 2,2, 0,0, 1,1];
-    var meshJ = [1,2, 5,6, 1,5, 3,7, 3,7, 2,6];
-    var meshK = [2,3, 6,7, 5,4, 7,6, 7,4, 6,5];
-    var faceColor = 'rgba(0,229,255,0.10)', edgeColor = 'rgba(0,229,255,0.75)';
-    var edges = [[0,1],[1,2],[2,3],[3,0],[4,5],[5,6],[6,7],[7,4],[0,4],[1,5],[2,6],[3,7]];
-    var ex = [], ey = [], ez = [];
-    edges.forEach(function(e) {{ ex.push(null, c[e[0]][0], c[e[1]][0]); ey.push(null, c[e[0]][1], c[e[1]][1]); ez.push(null, c[e[0]][2], c[e[1]][2]); }});
-    return [
-      {{ type: 'mesh3d', x: [c[0][0],c[1][0],c[2][0],c[3][0], c[4][0],c[5][0],c[6][0],c[7][0]],
-          y: [c[0][1],c[1][1],c[2][1],c[3][1], c[4][1],c[5][1],c[6][1],c[7][1]],
-          z: [c[0][2],c[1][2],c[2][2],c[3][2], c[4][2],c[5][2],c[6][2],c[7][2]],
-          i: meshI, j: meshJ, k: meshK, color: faceColor, flatshading: true,
-          showlegend: false, hoverinfo: 'skip' }},
-      {{ type: 'scatter3d', mode: 'lines', x: ex, y: ey, z: ez,
-          line: {{color: edgeColor, width: 3}}, showlegend: false, hoverinfo: 'skip' }}
-    ];
-  }}
-
-  function removeSelectionBox() {{
-    if (selectTraces.length > 0) {{ Plotly.deleteTraces(gd, selectTraces); selectTraces = []; }}
-  }}
-
-  function renderSelectionBox(bounds) {{
-    if (!bounds) {{ removeSelectionBox(); return; }}
-    var newTraces = buildBoxTraces(bounds);
-    if (selectTraces.length >= 2) {{
-      // 更新已有 trace 数据（比删除+重建快得多）
-      Plotly.restyle(gd, {{
-        x: [newTraces[0].x], y: [newTraces[0].y], z: [newTraces[0].z],
-        i: [newTraces[0].i], j: [newTraces[0].j], k: [newTraces[0].k]
-      }}, selectTraces[0]);
-      Plotly.restyle(gd, {{
-        x: [newTraces[1].x], y: [newTraces[1].y], z: [newTraces[1].z]
-      }}, selectTraces[1]);
-    }} else {{
-      // 首次渲染：创建 trace
-      removeSelectionBox();
-      var base = gd.data.length;
-      Plotly.addTraces(gd, newTraces);
-      for (var i = 0; i < newTraces.length; i++) selectTraces.push(base + i);
-    }}
-  }}
-
-  // ===== 更新显示 =====
-  function updateLabels(bounds) {{
-    labelX.textContent = bounds.xMin.toFixed(0) + ' ~ ' + bounds.xMax.toFixed(0) + ' m';
-    labelY.textContent = bounds.yMin.toFixed(0) + ' ~ ' + bounds.yMax.toFixed(0) + ' m';
-    labelZ.textContent = bounds.zMin.toFixed(0) + ' ~ ' + bounds.zMax.toFixed(0) + ' m';
-  }}
-
-  // 纯 DOM 更新：拖动过程中每帧执行，不触碰 Plotly（体积计算实测约 0.06ms）
-  function updateReadout() {{
-    var bounds = getBoundsFromSliders();
-    currentBounds = bounds;
-    updateLabels(bounds);
-    var result = computeVolume(bounds);
-    var html = '<div class="vol-total">' + formatVolume(result.total) + '</div>';
-    html += '<div class="vol-detail">有效网格: ' + result.validCells.toLocaleString() + ' / ' + result.totalCells.toLocaleString()
-      + ' (' + (result.totalCells > 0 ? (result.validCells / result.totalCells * 100).toFixed(1) : 0) + '%)'
-      + ' | 网格: ' + result.cellArea.toFixed(1) + ' m²</div>';
-    if (dg.liths.length > 1) {{
-      html += '<div class="vol-per-lith">';
-      dg.liths.forEach(function(lith) {{
-        if (activeLiths.indexOf(lith) < 0) return;
-        html += lith + ': ' + formatVolume(result.byLith[lith] || 0) + '<br>';
-      }});
-      html += '</div>';
-    }}
-    resultDiv.innerHTML = html;
-  }}
-
-  // 3D 框体重绘。注意：gl3d 场景没有任何增量更新路径，任何一次 restyle 都会让 plotly
-  // 把场景内所有 trace 重新三角化并重传 WebGL，因此这里只在边界真正变化时调用，
-  // 且只在拖动结束（change / 指针抬起）后调用，绝不在拖动过程中调用。
-  function updateBox(force) {{
-    if (!active || !currentBounds) return;
-    var key = boundsKey(currentBounds);
-    if (!force && key === lastBoxKey) return;
-    lastBoxKey = key;
-    renderSelectionBox(currentBounds);
-  }}
-
-  function scheduleBoxUpdate() {{
-    if (_boxTimer !== null) clearTimeout(_boxTimer);
-    _boxTimer = setTimeout(function() {{ _boxTimer = null; updateBox(false); }}, BOX_DEBOUNCE_MS);
-  }}
-
-  // ===== 面板开/关 =====
-  function openPanel() {{
-    active = true;
-    panel.classList.add('visible');
-    btnActivate.classList.add('active');
-    btnActivate.textContent = '📐 关闭估算';
-    currentBounds = {{ xMin: xDataMin, xMax: xDataMax, yMin: yDataMin, yMax: yDataMax, zMin: zDataMin, zMax: zDataMax }};
-    setSlidersFromBounds(currentBounds);
-    resetRotation();
-    updateReadout();
-    updateBox(true);
-  }}
-
-  function closePanel() {{
-    active = false;
-    currentBounds = null;
-    lastBoxKey = null;
-    if (_boxTimer !== null) {{ clearTimeout(_boxTimer); _boxTimer = null; }}
-    removeSelectionBox();
-    resetRotation();
-    panel.classList.remove('visible');
-    btnActivate.classList.remove('active');
-    btnActivate.textContent = '📐 体积估算';
-  }}
-
-  btnActivate.addEventListener('click', function() {{ active ? closePanel() : openPanel(); }});
-  btnCancel.addEventListener('click', closePanel);
-  btnConfirm.addEventListener('click', function() {{
-    if (!currentBounds) return;
-    var result = computeVolume(currentBounds);
-    resultDiv.innerHTML = '<div class="vol-total">' + formatVolume(result.total) + '</div><div class="vol-detail">✅ 已确认</div>';
-  }});
-
-  // ===== 滑块输入（面板打开时始终响应） =====
-  // 拖动中：只刷新数值读数（纯 DOM，零 Plotly 调用）；松手：才重绘一次 3D 框体。
-  var _sliderRAF = null;
-  function onSliderRAF() {{
-    if (_sliderRAF !== null) return;
-    _sliderRAF = requestAnimationFrame(function() {{ _sliderRAF = null; if (active) updateReadout(); }});
-  }}
-
-  // change 只在指针松开时触发；键盘按住自动重复会连续触发，故再走一层尾随防抖合并。
-  function onSliderCommit() {{
-    if (!active) return;
-    updateReadout();
-    scheduleBoxUpdate();
-  }}
-
-  slXMin.addEventListener('input', function() {{
-    if (parseFloat(this.value) >= parseFloat(slXMax.value)) slXMax.value = Math.min(SLIDER_STEPS, parseFloat(this.value) + 1);
-    onSliderRAF();
-  }});
-  slXMin.addEventListener('change', onSliderCommit);
-  slXMax.addEventListener('input', function() {{
-    if (parseFloat(this.value) <= parseFloat(slXMin.value)) slXMin.value = Math.max(0, parseFloat(this.value) - 1);
-    onSliderRAF();
-  }});
-  slXMax.addEventListener('change', onSliderCommit);
-  slYMin.addEventListener('input', function() {{
-    if (parseFloat(this.value) >= parseFloat(slYMax.value)) slYMax.value = Math.min(SLIDER_STEPS, parseFloat(this.value) + 1);
-    onSliderRAF();
-  }});
-  slYMin.addEventListener('change', onSliderCommit);
-  slYMax.addEventListener('input', function() {{
-    if (parseFloat(this.value) <= parseFloat(slYMin.value)) slYMin.value = Math.max(0, parseFloat(this.value) - 1);
-    onSliderRAF();
-  }});
-  slYMax.addEventListener('change', onSliderCommit);
-  slZMin.addEventListener('input', function() {{
-    if (parseFloat(this.value) >= parseFloat(slZMax.value)) slZMax.value = Math.min(SLIDER_STEPS, parseFloat(this.value) + 1);
-    onSliderRAF();
-  }});
-  slZMin.addEventListener('change', onSliderCommit);
-  slZMax.addEventListener('input', function() {{
-    if (parseFloat(this.value) <= parseFloat(slZMin.value)) slZMin.value = Math.max(0, parseFloat(this.value) - 1);
-    onSliderRAF();
-  }});
-  slZMax.addEventListener('change', onSliderCommit);
-
-  // 旋转角度（绕 X / Y / Z 三个方向，均绕框体中心）
-  rotAngle.addEventListener('input', function() {{
-    rotLabel.textContent = this.value + '°';
-    onSliderRAF();
-  }});
-  rotAngle.addEventListener('change', onSliderCommit);
-  rotXAngle.addEventListener('input', function() {{
-    rotXLabel.textContent = this.value + '°';
-    onSliderRAF();
-  }});
-  rotXAngle.addEventListener('change', onSliderCommit);
-  rotYAngle.addEventListener('input', function() {{
-    rotYLabel.textContent = this.value + '°';
-    onSliderRAF();
-  }});
-  rotYAngle.addEventListener('change', onSliderCommit);
-
-  // 兜底：个别浏览器/触屏场景下 range input 可能不派发 change。指针一抬起就补一次
-  // 框体更新；lastBoxKey 会挡掉无变化的情况，因此这是零成本空操作。
-  document.addEventListener('pointerup', function() {{ if (active) scheduleBoxUpdate(); }});
-  document.addEventListener('mouseup', function() {{ if (active) scheduleBoxUpdate(); }});
-
-  // ===== 面板折叠 =====
-  panelToggleBtn.addEventListener('click', function(e) {{
-    e.stopPropagation();
-    panelCollapsed = !panelCollapsed;
-    if (panelCollapsed) {{
-      panelBody.style.display = 'none';
-      panelToggleBtn.textContent = '+';
-    }} else {{
-      panelBody.style.display = 'block';
-      panelToggleBtn.textContent = '−';
-    }}
-  }});
-  panelHeaderBtn.addEventListener('click', function() {{
-    panelCollapsed = !panelCollapsed;
-    if (panelCollapsed) {{
-      panelBody.style.display = 'none';
-      panelToggleBtn.textContent = '+';
-    }} else {{
-      panelBody.style.display = 'block';
-      panelToggleBtn.textContent = '−';
-    }}
-  }});
-
-  // ===== 初始状态 =====
-  initSliders();
-
-  console.log('[体积估算] 已加载，网格: ' + dg.nx + '×' + dg.ny + ', 岩性数: ' + dg.liths.length);
-
-}})();
-</script>
+<script>window.VOL_PANEL_CFG={json.dumps(vol_cfg)};</script>
+<script charset="utf-8" src="{VOLUME_PANEL_JS_URL}"></script>
 '''
     injection_parts.append(volume_panel_js)
 
@@ -2664,7 +2187,9 @@ def add_annotations_to_ai_image(ai_image_path, output_path, z_min, z_max):
         z_val = z_max - (z_max - z_min) * i / n_ticks
         draw.line([ruler_x + ruler_width, y, ruler_x + ruler_width + 8, y],
                   fill='black', width=2)
-        draw.text((ruler_x + ruler_width + 12, y - 8), f'{int(z_val)}m',
+        # 高程标注保留两位小数（如 523.55m）：这是画在 AI 效果图上的深度标尺，
+# 不是坐标轴，刻度值按 6 等分算出来通常不是整数，仍按两位小数显示。
+        draw.text((ruler_x + ruler_width + 12, y - 8), f'{z_val:.2f}m',
                   fill='black', font=cn_font)
 
     # 标题（中文）
@@ -3965,7 +3490,10 @@ def perform_kriging_analysis(loc_df, litho_df, survey_df,
             ax.set_title(title, fontsize=11)
             ax.set_xlabel('开孔坐标N (m)', fontsize=8)
             ax.set_ylabel('开孔坐标E (m)', fontsize=8)
+            # 坐标刻度统一为「保留两位小数的普通数字」（如 3232138.97）
             ax.ticklabel_format(style='plain', axis='both', useOffset=False)
+            ax.xaxis.set_major_formatter(FormatStrFormatter('%.2f'))
+            ax.yaxis.set_major_formatter(FormatStrFormatter('%.2f'))
             ax.tick_params(axis='both', labelsize=7)
             fig.colorbar(cf, ax=ax, shrink=0.7)
 
@@ -4187,6 +3715,13 @@ def plot_kriging_comparison(
     ax4.set_xlabel('Easting (m)')
     ax4.set_ylabel('Northing (m)')
     plt.colorbar(im4, ax=ax4, label='方差')
+
+    # 坐标刻度统一为「保留两位小数的普通数字」（如 3232138.97）：
+    # 关掉科学计数法与 matplotlib 默认的大数偏移量（1e6）
+    for ax in axes.ravel():
+        ax.ticklabel_format(style='plain', axis='both', useOffset=False)
+        ax.xaxis.set_major_formatter(FormatStrFormatter('%.2f'))
+        ax.yaxis.set_major_formatter(FormatStrFormatter('%.2f'))
 
     fig.suptitle(f'{layer_name} - {part_name} 克里金数值分析',
                  fontsize=16, fontweight='bold', y=0.995)

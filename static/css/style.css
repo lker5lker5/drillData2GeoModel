@@ -1987,7 +1987,7 @@ body {
 
 /* ---- 结果区域间距优化 ---- */
 .result-panel {
-    padding: 20px 28px;
+    padding: 5 px 20px;
     gap: 8px;
 }
 .results-section {

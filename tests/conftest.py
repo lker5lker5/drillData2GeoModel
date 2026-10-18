@@ -113,15 +113,24 @@ def override_config(monkeypatch):
     cfg.CACHE_ENABLED = True
     cfg.CACHE_TTL_HOURS = 24
 
-    # 同步更新 mineDrillApp 的模块级副本（from config import * 导入的）
-    try:
-        import mineDrillApp
-        mineDrillApp.UPLOAD_FOLDER = cfg.UPLOAD_FOLDER
-        mineDrillApp.OUTPUT_FOLDER = cfg.OUTPUT_FOLDER
-        mineDrillApp.TEMPLATE_FOLDER = cfg.TEMPLATE_FOLDER
-        mineDrillApp.STATIC_FOLDER = cfg.STATIC_FOLDER
-    except ImportError:
-        pass  # mineDrillApp 可能尚未导入
+    # 同步刷新所有「已导入」模块里由 from config import * 产生的模块级路径副本。
+    # 生产环境中这些路径在导入后不会变化（USER_ADJUSTABLE_PARAMS 中不含路径项），
+    # 所以业务代码无需改动；但测试是在模块导入之后才改写 config 的路径常量，
+    # 若不刷新这些副本就会出现跨测试的目录污染——例如 test_html_content 在临时
+    # 输出目录里找不到刚生成的 HTML（文件实际被写进了真实 outputs/）。
+    # 在本 fixture 之后才导入的模块，导入时直接取到临时路径，无需在此处理。
+    _PATH_ATTRS = ('UPLOAD_FOLDER', 'OUTPUT_FOLDER', 'TEMPLATE_FOLDER', 'STATIC_FOLDER')
+    for _mod in list(sys.modules.values()):
+        _name = getattr(_mod, '__name__', '') or ''
+        if _name != 'mineDrillApp' and not _name.startswith('handlers'):
+            continue
+        for _attr in _PATH_ATTRS:
+            if hasattr(_mod, _attr):
+                setattr(_mod, _attr, getattr(cfg, _attr))
+        # TEMPLATE_FILE 是由 TEMPLATE_FOLDER 派生的模块级常量，同样要跟着走
+        if hasattr(_mod, 'TEMPLATE_FILE'):
+            setattr(_mod, 'TEMPLATE_FILE',
+                    os.path.join(cfg.TEMPLATE_FOLDER, 'drill_data_template.xlsx'))
 
     yield
     shutil.rmtree(tmpdir, ignore_errors=True)

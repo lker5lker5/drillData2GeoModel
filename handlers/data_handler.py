@@ -3,18 +3,96 @@
 使用 register_routes(app) 模式注册所有路由。
 """
 from flask import request, jsonify, render_template, send_file, send_from_directory
+from flask import Response, abort
 import os
 import shutil
 import uuid
 import time
+import gzip
+import mimetypes
 import pandas as pd
 import numpy as np
 import zipfile
 from datetime import datetime
 from io import BytesIO
+from werkzeug.utils import safe_join
+from werkzeug.http import http_date
 from .app_utils import *
 from config import *
 from .processors import *
+
+
+# ==================== 生成文件服务：gzip + 缓存 ====================
+# 生成页里内嵌的 plotly.js 有 3.6 MB，gzip 后 1.1 MB，是页面最大的载荷。
+# 这里对可压缩的文本资源在客户端支持时返回 gzip，并把压缩结果按
+# (路径, 修改时间, 大小) 缓存在进程内——每个文件只付一次压缩 CPU；
+# 同时返回 ETag / Last-Modified，浏览器再次打开同一页面时命中 304，
+# 一个字节都不用重传（本地访问时这一项比压缩本身更值钱）。
+_COMPRESSIBLE_EXT = {'.html', '.htm', '.js', '.css', '.json', '.svg', '.txt', '.xml', '.csv'}
+_GZIP_MIN_SIZE = 1024      # 再小压缩后反而更大
+_GZIP_LEVEL = 6            # 实测 6 与 9 的压缩率相同（都是 73%），但快约 20%
+_GZIP_CACHE_LIMIT = 8      # 每项约 1 MB，常驻内存上限约 9 MB
+_gzip_cache = {}
+
+
+def _gzip_cached(path):
+    """返回 path 的 gzip 字节；命中进程内缓存则不再重复压缩。"""
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None
+    key = (path, st.st_mtime_ns, st.st_size)
+    hit = _gzip_cache.get(key)
+    if hit is not None:
+        return hit
+    try:
+        with open(path, 'rb') as fh:
+            packed = gzip.compress(fh.read(), _GZIP_LEVEL)
+    except OSError:
+        return None
+    if len(_gzip_cache) >= _GZIP_CACHE_LIMIT:
+        _gzip_cache.pop(next(iter(_gzip_cache)))   # 简单 FIFO，够用
+    _gzip_cache[key] = packed
+    return packed
+
+
+def serve_file_with_gzip(directory, filename, max_age=300):
+    """
+    带 gzip 与缓存头的文件服务（/outputs 与 /static 共用）。
+
+    max_age: 强缓存秒数。生成物（名字带时间戳、内容不再变化）给 300 秒，
+             静态源文件给 None（每次都带 ETag 回来校验，保证改了立刻生效）。
+    """
+    full = safe_join(directory, filename)
+    if not full or not os.path.isfile(full):
+        abort(404)
+
+    st = os.stat(full)
+    ext = os.path.splitext(full)[1].lower()
+    want_gzip = (ext in _COMPRESSIBLE_EXT and st.st_size >= _GZIP_MIN_SIZE
+                 and 'gzip' in (request.headers.get('Accept-Encoding') or ''))
+    # gzip 与非 gzip 是同一文件的不同表示，ETag 必须区分开，
+    # 否则先取到 gzip 的浏览器再发不带 gzip 的请求时会误命中 304。
+    etag = '"%x-%x%s"' % (int(st.st_mtime), st.st_size, '-gz' if want_gzip else '')
+
+    if request.headers.get('If-None-Match') == etag:
+        resp = Response(status=304)
+    else:
+        packed = _gzip_cached(full) if want_gzip else None
+        if packed is not None:
+            resp = Response(packed, mimetype=mimetypes.guess_type(full)[0]
+                            or 'application/octet-stream')
+            resp.headers['Content-Encoding'] = 'gzip'
+        else:
+            resp = send_file(full, conditional=False)
+
+    resp.headers['ETag'] = etag
+    resp.headers['Last-Modified'] = http_date(st.st_mtime)
+    resp.headers['Cache-Control'] = ('no-cache' if max_age is None
+                                     else 'private, max-age=%d' % max_age)
+    resp.headers['Vary'] = 'Accept-Encoding'
+    return resp
+
 
 def register_routes(app):
     # ==================== 路由 ====================
@@ -146,8 +224,34 @@ def register_routes(app):
     
     @app.route('/outputs/<path:filename>')
     def output_files(filename):
-        """输出文件服务"""
-        return send_from_directory(OUTPUT_FOLDER, filename)
+        """输出文件服务（支持 gzip 与缓存校验）"""
+        return serve_file_with_gzip(OUTPUT_FOLDER, filename)
+
+    @app.route(PLOTLYJS_URL)
+    def shared_plotlyjs():
+        """
+        共享 plotly.js（生成页共用的那一份，3.60 MB）。
+
+        这条显式路由没有参数，比 Flask 内置的 /static/<path:filename> 更具体，
+        因此优先匹配——只为这一个占页面 85% 的资源开 gzip 与缓存校验，
+        /static/ 下其它文件仍走 Flask 原有行为，不受影响。
+        max_age=None：每次都带 ETag 回来校验，文件换了立刻生效（只花一次 304）。
+        """
+        return serve_file_with_gzip(STATIC_FOLDER, PLOTLYJS_REL_PATH, max_age=None)
+
+    # 生成页引用的两个面板脚本（第 12 项抽成的独立文件）走同一条通道：
+    # 与共享 plotly.js 一样是无参数路由，优先于 Flask 内置的 /static/<path:filename>。
+    # 体积虽小（3.7 KB / 22.5 KB），但它们是每个生成页都要下载的公共资源，
+    # 开 gzip 后可再省约 3/4；缓存策略与 plotly.js 保持一致，改了立刻生效。
+    @app.route(LAYER_PANEL_JS_URL)
+    def shared_layer_panel_js():
+        """分层观察 / 岩性显隐 / 钻孔显隐面板脚本。"""
+        return serve_file_with_gzip(STATIC_FOLDER, LAYER_PANEL_JS_REL_PATH, max_age=None)
+
+    @app.route(VOLUME_PANEL_JS_URL)
+    def shared_volume_panel_js():
+        """体积估算面板脚本。"""
+        return serve_file_with_gzip(STATIC_FOLDER, VOLUME_PANEL_JS_REL_PATH, max_age=None)
     
     
     

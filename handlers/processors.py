@@ -545,8 +545,10 @@ def plot_drill_holes_on_ax(ax, loc_df, survey_df, litho_df,
 
     for hid in hole_ids:
         row = loc_df[loc_df['钻孔编号'] == hid].iloc[0]
-        x0 = row['开孔坐标N']
-        y0 = row['开孔坐标E']
+        # X 轴 = 东（开孔坐标E）、Y 轴 = 北（开孔坐标N），与 compute_trajectory 返回的
+        # (东向偏移, 北向偏移) 一一对应：方位角 0°（正北）沿 Y 轴、90°（正东）沿 X 轴。
+        x0 = row['开孔坐标E']
+        y0 = row['开孔坐标N']
         z0 = row['开孔高程R']
 
         surv = survey_df[survey_df['钻孔编号'] == hid]
@@ -671,11 +673,11 @@ def draw_single_model_view(volume_data, loc_df, survey_df, litho_df,
     # 3. 坐标轴样式
     if labeled:
         # 标注版：完整坐标轴，透明背景 + 网格线
-        # 注意方向：体数据按「X=N, Y=E」约定构建（见 build_geological_bodies_with_volume_v2
+        # 注意方向：体数据按「X=东, Y=北」约定构建（见 build_geological_bodies_with_volume_v2
         # 的归一化注释），而 plot_surface 是 plot_surface(X, Y, Z)——即 X 轴画的是
-        # 开孔坐标N、Y 轴画的是开孔坐标E。此处标题必须与之一致（原先两者写反了）。
-        ax.set_xlabel('开孔坐标N (m)')
-        ax.set_ylabel('开孔坐标E (m)')
+        # 开孔坐标E（东）、Y 轴画的是开孔坐标N（北）。此处标题必须与之一致。
+        ax.set_xlabel('开孔坐标E (m)')
+        ax.set_ylabel('开孔坐标N (m)')
         ax.set_zlabel('海拔高度 (m)')
         ax.xaxis.pane.fill = False
         ax.yaxis.pane.fill = False
@@ -839,8 +841,8 @@ def generate_drill_views(loc_df, survey_df, litho_df, output_dir, base_name):
             show_legend=True
         )
 
-        ax.set_xlabel('北 (m)')
-        ax.set_ylabel('东 (m)')
+        ax.set_xlabel('东 (m)')
+        ax.set_ylabel('北 (m)')
         ax.set_zlabel('海拔 (m)')
         ax.xaxis.pane.fill = False
         ax.yaxis.pane.fill = False
@@ -851,8 +853,8 @@ def generate_drill_views(loc_df, survey_df, litho_df, output_dir, base_name):
         all_n = loc_df['开孔坐标N'].values
         all_e = loc_df['开孔坐标E'].values
         margin = 20
-        ax.set_xlim(all_n.min() - margin, all_n.max() + margin)
-        ax.set_ylim(all_e.min() - margin, all_e.max() + margin)
+        ax.set_xlim(all_e.min() - margin, all_e.max() + margin)
+        ax.set_ylim(all_n.min() - margin, all_n.max() + margin)
 
         # 坐标刻度统一为「普通整数」（如 3123457）：
         # 关掉科学计数法与 matplotlib 默认的大数偏移量（1e6），并去掉小数位。
@@ -1012,17 +1014,17 @@ def add_drill_traces(fig, loc_df, survey_df, litho_df, hole_ids, use_style, dril
     """
     把钻孔轨迹追加到 fig：每孔一条灰色虚线轴线 + 若干分段岩性 + 孔口编号文字。
 
-    坐标一律使用钻孔表里的绝对值（开孔坐标N / 开孔坐标E / 开孔高程R），不做任何
-    原点平移——这样页面上的 X/Y 轴读数与钻孔表逐值对应。原先「钻孔专用页按
-    (N.min(), E.min()) 平移」的做法已取消（平移对形状无影响，却使轴读数与钻孔表
-    对不上），两种页面现在用同一个坐标系。
+    坐标一律使用钻孔表里的绝对值（X 轴=开孔坐标E（东）、Y 轴=开孔坐标N（北）、
+    Z 轴=开孔高程R（海拔）），不做任何原点平移——这样页面上的 X/Y 轴读数与钻孔表
+    逐值对应。原先「钻孔专用页按 (N.min(), E.min()) 平移」的做法已取消（平移对形状
+    无影响，却使轴读数与钻孔表对不上），两种页面现在用同一个坐标系。
 
     不返回值：调用方需要的 trace 索引仍由 fig.data 的长度得出。
     """
     for hid in hole_ids:
         row = loc_df[loc_df['钻孔编号'] == hid].iloc[0]
-        x0 = row['开孔坐标N']
-        y0 = row['开孔坐标E']
+        x0 = row['开孔坐标E']
+        y0 = row['开孔坐标N']
         z0 = row['开孔高程R']
 
         surv = survey_df[survey_df['钻孔编号'] == hid]
@@ -1148,10 +1150,10 @@ def generate_drill_model_only(loc_df, survey_df, litho_df, output_dir, base_name
             # Plotly 默认的 SI 缩写（3.1825M / 523.55K），tickformat='.0f' 去掉小数位。
             # hoverformat 仍是两位小数：悬停时用来看精确值（只有未定 hovertemplate 的
             # trace 才会用到；钻孔 trace 自带 hovertemplate，不受它影响）。
-            xaxis=dict(title='北 (m)', range=[all_n.min() - margin, all_n.max() + margin],
+            xaxis=dict(title='东 (m)', range=[all_e.min() - margin, all_e.max() + margin],
                        showgrid=True, zeroline=False, showbackground=False,
                        tickformat='.0f', hoverformat='.2f', exponentformat='none'),
-            yaxis=dict(title='东 (m)', range=[all_e.min() - margin, all_e.max() + margin],
+            yaxis=dict(title='北 (m)', range=[all_n.min() - margin, all_n.max() + margin],
                        showgrid=True, zeroline=False, showbackground=False,
                        tickformat='.0f', hoverformat='.2f', exponentformat='none'),
             zaxis=dict(title='海拔 (m)', range=[z_range_min, z_range_max],
@@ -1386,8 +1388,8 @@ def generate_interactive_model(loc_df, survey_df, litho_df, output_dir, base_nam
             trace_idx += 1
 
         # ---- 5) 图例标记（占位 trace，不参与显隐控制，保持图例始终完整） ----
-        dummy_x = all_n.min() - 500
-        dummy_y = all_e.min() - 500
+        dummy_x = all_e.min() - 500
+        dummy_y = all_n.min() - 500
         dummy_z = z_min_data - 500
         fig.add_trace(go.Scatter3d(
             x=[dummy_x], y=[dummy_y], z=[dummy_z],
@@ -1406,7 +1408,7 @@ def generate_interactive_model(loc_df, survey_df, litho_df, output_dir, base_nam
     add_drill_traces(fig, loc_df, survey_df, litho_df, hole_ids, use_style, drill_radius)
 
     margin = 20
-    x_min, x_max = all_n.min()-margin, all_n.max()+margin
+    x_min, x_max = all_e.min()-margin, all_e.max()+margin
     # 如有多个岩性，预扩 X 范围以容纳分层观察的水平展开
     if len(lith_layer_counts) >= 2:
         x_pad = (x_max - x_min) * 0.4
@@ -1418,10 +1420,10 @@ def generate_interactive_model(loc_df, survey_df, litho_df, output_dir, base_nam
             # Plotly 默认的 SI 缩写（3.1825M / 523.55K），tickformat='.0f' 去掉小数位。
             # hoverformat 仍是两位小数：悬停时用来看精确值（只有未定 hovertemplate 的
             # trace 才会用到；钻孔 trace 自带 hovertemplate，不受它影响）。
-            xaxis=dict(title='开孔坐标N (m)', range=[x_min, x_max],
+            xaxis=dict(title='开孔坐标E (m)', range=[x_min, x_max],
                        showgrid=True, zeroline=False, showbackground=False,
                        tickformat='.0f', hoverformat='.2f', exponentformat='none'),
-            yaxis=dict(title='开孔坐标E (m)', range=[all_e.min()-margin, all_e.max()+margin],
+            yaxis=dict(title='开孔坐标N (m)', range=[all_n.min()-margin, all_n.max()+margin],
                        showgrid=True, zeroline=False, showbackground=False,
                        tickformat='.0f', hoverformat='.2f', exponentformat='none'),
             zaxis=dict(title='海拔高度 (m)', range=[z_range_min, z_range_max],
@@ -1481,7 +1483,7 @@ def generate_interactive_model(loc_df, survey_df, litho_df, output_dir, base_nam
                     lith_median_z.setdefault(m['lith'], []).extend(vals)
             lith_order = sorted(lith_median_z.keys(),
                                 key=lambda l: sorted(lith_median_z[l])[len(lith_median_z[l])//2])
-            x_range = all_n.max() - all_n.min()
+            x_range = all_e.max() - all_e.min()
             sep_per_lith = max(x_range * 0.35, 30.0)
 
         # ---- 构建面板各区块 ----
@@ -1687,14 +1689,14 @@ input:checked+.drill-slider:before{{transform:translateX(16px)}}
   </div>
   <div class="vol-panel-body" id="vol-panel-body">
     <div class="vol-slider-group">
-      <div class="vol-label"><span>X (北) 范围</span><span id="vol-x-label">—</span></div>
+      <div class="vol-label"><span>X (东) 范围</span><span id="vol-x-label">—</span></div>
       <div class="vol-slider-track">
         <input type="range" id="vol-x-min" min="0" max="100" step="0.1" value="0">
         <input type="range" id="vol-x-max" min="0" max="100" step="0.1" value="100">
       </div>
     </div>
     <div class="vol-slider-group">
-      <div class="vol-label"><span>Y (东) 范围</span><span id="vol-y-label">—</span></div>
+      <div class="vol-label"><span>Y (北) 范围</span><span id="vol-y-label">—</span></div>
       <div class="vol-slider-track">
         <input type="range" id="vol-y-min" min="0" max="100" step="0.1" value="0">
         <input type="range" id="vol-y-max" min="0" max="100" step="0.1" value="100">
@@ -2906,11 +2908,11 @@ def build_geological_bodies_with_volume_v2(loc_df, litho_df, survey_df,
     if method == 'kriging':
         print(f"==> 克里金变异函数: {kriging_variogram}")
     
-    # ========== 1. 孔口坐标（X=N, Y=E 约定，与 plot_drill_holes_on_ax 一致）==========
+    # ========== 1. 孔口坐标（X=东, Y=北 约定，与 plot_drill_holes_on_ax 一致）==========
     hole_coords = {}
     for _, row in loc_df.iterrows():
         hid = row['钻孔编号']
-        hole_coords[hid] = (row['开孔坐标N'], row['开孔坐标E'], row['开孔高程R'])
+        hole_coords[hid] = (row['开孔坐标E'], row['开孔坐标N'], row['开孔高程R'])
     
     # ========== 2. 轨迹缓存 ==========
     traj_cache = {}
@@ -2920,11 +2922,11 @@ def build_geological_bodies_with_volume_v2(loc_df, litho_df, survey_df,
             lengths, xs, ys, zs = compute_trajectory(surv)
             traj_cache[hid] = {'lengths': lengths, 'xs': xs, 'ys': ys, 'zs': zs}
     
-    # ========== 3. 坐标归一化参数（按 X=N, Y=E 约定）==========
-    base_x = loc_df['开孔坐标N'].min()
-    base_y = loc_df['开孔坐标E'].min()
-    span_x = loc_df['开孔坐标N'].max() - base_x
-    span_y = loc_df['开孔坐标E'].max() - base_y
+    # ========== 3. 坐标归一化参数（按 X=东, Y=北 约定）==========
+    base_x = loc_df['开孔坐标E'].min()
+    base_y = loc_df['开孔坐标N'].min()
+    span_x = loc_df['开孔坐标E'].max() - base_x
+    span_y = loc_df['开孔坐标N'].max() - base_y
     span_max = max(span_x, span_y, 1.0)
     scale = 1000.0
     scale_factor = scale / span_max
@@ -2945,12 +2947,12 @@ def build_geological_bodies_with_volume_v2(loc_df, litho_df, survey_df,
         color = parse_color(seg['建模颜色'], lith)
         if hid not in hole_coords or hid not in traj_cache:
             continue
-        n0, e0, z0 = hole_coords[hid]
+        e0, n0, z0 = hole_coords[hid]
         traj = traj_cache[hid]
         x_top, y_top, z_top = get_interpolated_coords(traj['lengths'], traj['xs'], traj['ys'], traj['zs'], [d_top])
         x_bot, y_bot, z_bot = get_interpolated_coords(traj['lengths'], traj['xs'], traj['ys'], traj['zs'], [d_bot])
-        x_top, y_top = x_top[0] + n0, y_top[0] + e0
-        x_bot, y_bot = x_bot[0] + n0, y_bot[0] + e0
+        x_top, y_top = x_top[0] + e0, y_top[0] + n0
+        x_bot, y_bot = x_bot[0] + e0, y_bot[0] + n0
         z_top, z_bot = z_top[0] + z0, z_bot[0] + z0
         
         if lith not in litho_groups:
@@ -2964,7 +2966,11 @@ def build_geological_bodies_with_volume_v2(loc_df, litho_df, survey_df,
     
     # ========== 5. 归一化插值网格 ==========
     grid_res = grid_resolution
-    xi_n = np.linspace(0.0, scale, grid_res)
+    # 两个方向各自按自己的跨度铺网格（换算回真实尺寸就是 span_x × span_y）。
+    # 注意：不能把 X 方向一律撑到 span_max——那样只要 X 方向的跨度较小，
+    # 网格就会朝 X 正方向多长出一块没有控制点的空白区（矿体外面多一圈，
+    # 且 X/Y 两向的格子尺寸不再各自对应真实跨度）。
+    xi_n = np.linspace(0.0, scale * (span_x / span_max), grid_res)
     yi_n = np.linspace(0.0, scale * (span_y / span_max), grid_res)
     xi_n, yi_n = np.meshgrid(xi_n, yi_n)
     
@@ -3257,7 +3263,7 @@ def perform_kriging_analysis(loc_df, litho_df, survey_df,
     hole_coords = {}
     for _, row in loc_df.iterrows():
         hid = row['钻孔编号']
-        hole_coords[hid] = (row['开孔坐标N'], row['开孔坐标E'], row['开孔高程R'])
+        hole_coords[hid] = (row['开孔坐标E'], row['开孔坐标N'], row['开孔高程R'])
 
     traj_cache = {}
     for hid in loc_df['钻孔编号']:
@@ -3266,11 +3272,11 @@ def perform_kriging_analysis(loc_df, litho_df, survey_df,
             lengths, xs, ys, zs = compute_trajectory(surv)
             traj_cache[hid] = {'lengths': lengths, 'xs': xs, 'ys': ys, 'zs': zs}
 
-    # ========== 2. 坐标归一化参数（与 RBF 保持一致） ==========
-    base_x = loc_df['开孔坐标N'].min()
-    base_y = loc_df['开孔坐标E'].min()
-    span_x = loc_df['开孔坐标N'].max() - base_x
-    span_y = loc_df['开孔坐标E'].max() - base_y
+    # ========== 2. 坐标归一化参数（与 RBF 保持一致；X=东、Y=北） ==========
+    base_x = loc_df['开孔坐标E'].min()
+    base_y = loc_df['开孔坐标N'].min()
+    span_x = loc_df['开孔坐标E'].max() - base_x
+    span_y = loc_df['开孔坐标N'].max() - base_y
     span_max = max(span_x, span_y, 1.0)
     scale = 1000.0
     scale_factor = scale / span_max
@@ -3291,12 +3297,12 @@ def perform_kriging_analysis(loc_df, litho_df, survey_df,
         color = parse_color(seg['建模颜色'], lith)
         if hid not in hole_coords or hid not in traj_cache:
             continue
-        n0, e0, z0 = hole_coords[hid]
+        e0, n0, z0 = hole_coords[hid]
         traj = traj_cache[hid]
         x_top, y_top, z_top = get_interpolated_coords(traj['lengths'], traj['xs'], traj['ys'], traj['zs'], [d_top])
         x_bot, y_bot, z_bot = get_interpolated_coords(traj['lengths'], traj['xs'], traj['ys'], traj['zs'], [d_bot])
-        x_top, y_top = x_top[0] + n0, y_top[0] + e0
-        x_bot, y_bot = x_bot[0] + n0, y_bot[0] + e0
+        x_top, y_top = x_top[0] + e0, y_top[0] + n0
+        x_bot, y_bot = x_bot[0] + e0, y_bot[0] + n0
         z_top, z_bot = z_top[0] + z0, z_bot[0] + z0
 
         if lith not in litho_groups:
@@ -3308,7 +3314,11 @@ def perform_kriging_analysis(loc_df, litho_df, survey_df,
 
     # ========== 4. 归一化插值网格 ==========
     grid_res = grid_resolution
-    xi_n = np.linspace(0.0, scale, grid_res)
+    # 两个方向各自按自己的跨度铺网格（换算回真实尺寸就是 span_x × span_y）。
+    # 注意：不能把 X 方向一律撑到 span_max——那样只要 X 方向的跨度较小，
+    # 网格就会朝 X 正方向多长出一块没有控制点的空白区（矿体外面多一圈，
+    # 且 X/Y 两向的格子尺寸不再各自对应真实跨度）。
+    xi_n = np.linspace(0.0, scale * (span_x / span_max), grid_res)
     yi_n = np.linspace(0.0, scale * (span_y / span_max), grid_res)
     xi_n, yi_n = np.meshgrid(xi_n, yi_n)
     xi_orig, yi_orig = denormalize(xi_n, yi_n)
@@ -3488,8 +3498,8 @@ def perform_kriging_analysis(loc_df, litho_df, survey_df,
                        top_pts[:, 1] / scale_factor + base_y,
                        c='black', s=12, marker='o', alpha=0.6, label='控制点')
             ax.set_title(title, fontsize=11)
-            ax.set_xlabel('开孔坐标N (m)', fontsize=8)
-            ax.set_ylabel('开孔坐标E (m)', fontsize=8)
+            ax.set_xlabel('开孔坐标E (m)', fontsize=8)
+            ax.set_ylabel('开孔坐标N (m)', fontsize=8)
             # 坐标刻度统一为「保留两位小数的普通数字」（如 3232138.97）
             ax.ticklabel_format(style='plain', axis='both', useOffset=False)
             ax.xaxis.set_major_formatter(FormatStrFormatter('%.2f'))
